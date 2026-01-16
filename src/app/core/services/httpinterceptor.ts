@@ -25,19 +25,40 @@ import { CapacitorCookies } from '@capacitor/core';
 export class AuthInterceptor implements HttpInterceptor {
   errorMessages: any;
   decoded: any;
+  private isHandlingAuthError: boolean = false;
 
   showHomePage = async (isAndroidAppMode: boolean) => {
-    sessionStorage.clear();
-    localStorage.clear();
-    this.cookieService.deleteAll();
-    if (!isAndroidAppMode) {
-      this.redirectService.redirect(window.location.href);
-    } else {
-      await CapacitorCookies.deleteCookie({
-        url: encodeURI(environment.SERVICES_BASE_URL),
-        key: appConstants.AUTHORIZATION
-      });
-      await this.androidKeycloakService.getInstance().login();
+    // Prevent multiple simultaneous auth error handling
+    if (this.isHandlingAuthError) {
+      console.log('Auth error handling already in progress');
+      return;
+    }
+
+    // For Android, check if login is already in progress
+    if (isAndroidAppMode && this.androidKeycloakService.isLoginInProgress()) {
+      console.log('Login already in progress, skipping redirect');
+      return;
+    }
+
+    this.isHandlingAuthError = true;
+    try {
+      sessionStorage.clear();
+      localStorage.clear();
+      this.cookieService.deleteAll();
+      if (!isAndroidAppMode) {
+        this.redirectService.redirect(window.location.href);
+      } else {
+        await CapacitorCookies.deleteCookie({
+          url: encodeURI(environment.SERVICES_BASE_URL),
+          key: appConstants.AUTHORIZATION
+        });
+        await this.androidKeycloakService.login();
+      }
+    } finally {
+      // Reset flag after a delay to allow for normal flow
+      setTimeout(() => {
+        this.isHandlingAuthError = false;
+      }, 2000);
     }
   }
 
@@ -114,10 +135,7 @@ export class AuthInterceptor implements HttpInterceptor {
                 this.userProfileService.setUsername(event.body.response.userId);
                 this.userProfileService.setRoles(event.body.response.role);
                 //Set all attributes required for selected language
-                let langCode = this.decoded['locale'];
-                if (!langCode) {
-                  langCode = 'eng';
-                }
+                const langCode = this.decoded['locale'];
                 // Set user preferred language
                 const fileUrl = `./assets/i18n/${langCode}.json`;
                 fetch(fileUrl, { method: 'HEAD' })
@@ -155,21 +173,52 @@ export class AuthInterceptor implements HttpInterceptor {
                   event.body.errors[0]['errorCode'] ===
                   appConstants.AUTH_ERROR_CODE[1])
               ) {
-                this.showHomePage(isAndroidAppMode)
-                  .catch((error) => {
-                    console.log(error);
-                  });
+                // For Android, only trigger login if not already logging in
+                if (isAndroidAppMode) {
+                  if (!this.androidKeycloakService.isLoginInProgress()) {
+                    this.showHomePage(isAndroidAppMode)
+                      .catch((error) => {
+                        console.log('Error in showHomePage:', error);
+                      });
+                  }
+                } else {
+                  this.showHomePage(isAndroidAppMode)
+                    .catch((error) => {
+                      console.log('Error in showHomePage:', error);
+                    });
+                }
               }
             }
           }
         },
         (err) => {
           if (err instanceof HttpErrorResponse) {
-            if (!isLocalUrl) {
-              this.showHomePage(isAndroidAppMode)
-                .catch((error) => {
-                  console.log(error);
-                });
+            // Only trigger login for authentication-related errors
+            // Skip for network errors, timeouts, or other non-auth errors
+            const status = err.status;
+            const isAuthError = status === 401 || status === 403 || 
+                               (status >= 400 && status < 500 && !isLocalUrl);
+            
+            if (isAuthError && !isLocalUrl) {
+              // Check if this is a validateToken endpoint error
+              // If token validation fails, it's a real auth error
+              const isValidateTokenRequest = err.url && err.url.includes('validateToken');
+              
+              // For Android, only trigger login if not already logging in
+              if (isAndroidAppMode) {
+                if (!this.androidKeycloakService.isLoginInProgress()) {
+                  this.showHomePage(isAndroidAppMode)
+                    .catch((error) => {
+                      console.log('Error in showHomePage:', error);
+                    });
+                }
+              } else {
+                // For web, always trigger redirect
+                this.showHomePage(isAndroidAppMode)
+                  .catch((error) => {
+                    console.log('Error in showHomePage:', error);
+                  });
+              }
             }
           }
         }
