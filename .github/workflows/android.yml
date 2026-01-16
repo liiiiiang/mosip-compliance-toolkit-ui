@@ -8,11 +8,11 @@ on:
       services_base_url:
         description: 'The base URL for app services'
         required: true
-        default: 'https://api-internal.dev.mosip.net/v1/toolkit/'
+        default: 'https://api-internal.miaixs.com/v1/toolkit/'
       iam_url:
         description: 'The URL for the IAM server'
         required: true
-        default: 'https://iam.dev.mosip.net/auth'
+        default: 'https://iam.miaxis.com/auth'
         
 
 jobs:
@@ -47,13 +47,16 @@ jobs:
       run: cd android/app
       
     - name: Sync Capacitor project
-      run: npx cap sync
+      run: npx cap sync android
       
-    - name: Build APK
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v2
+      
+    - name: Build Debug APK
       working-directory: android
       run: |
         chmod +x ./gradlew
-        ./gradlew build
+        ./gradlew assembleDebug
     - name: Change to root directory
       run: cd ../
       
