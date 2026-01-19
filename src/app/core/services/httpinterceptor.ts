@@ -124,14 +124,19 @@ export class AuthInterceptor implements HttpInterceptor {
     
     if (accessToken) {
       try {
+        // Set cookie with Bearer prefix (if not already present)
+        const cookieValue = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
+        console.log('[DEBUG] Cookie value preview:', cookieValue.substring(0, 50) + '...');
+        
         await CapacitorCookies.setCookie({
           url: encodeURI(environment.SERVICES_BASE_URL),
           key: appConstants.AUTHORIZATION,
-          value: accessToken ? accessToken : '',
+          value: cookieValue,
         });
-        console.log('[DEBUG] Cookie set successfully');
+        console.log('[DEBUG] Cookie set successfully with Bearer prefix');
       } catch (error) {
         console.error('[DEBUG] ERROR setting cookie:', error);
+        console.error('[DEBUG] Error details:', error instanceof Error ? error.message : 'Unknown error');
       }
     } else {
       console.log('[DEBUG] WARNING: No access token available, cookie not set');
@@ -182,14 +187,35 @@ export class AuthInterceptor implements HttpInterceptor {
         request = request.clone({ withCredentials: true });
         
         //for android 12+, the Capacitor Cookies and 'withCredentials' do not work
-        //hence setting token as a new header 'accessToken'
-        //this should be mapped to cookie header in nginx conf
+        //hence setting token as headers
+        //1. Set standard Authorization header (backend expects this)
+        //2. Also set accessToken header as fallback (for nginx mapping if needed)
         let accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
-        console.log('[DEBUG] Token for accessToken header:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
-        request = request.clone({
-          setHeaders: { 'accessToken': accessToken ? accessToken : "" },
-        });
-        console.log('[DEBUG] Request headers set - accessToken:', accessToken ? 'SET' : 'EMPTY');
+        console.log('[DEBUG] Token for headers:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
+        
+        if (accessToken) {
+          // Check if token already has Bearer prefix
+          const tokenValue = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
+          
+          // Set both Authorization header (standard) and accessToken header (fallback)
+          request = request.clone({
+            setHeaders: { 
+              'Authorization': tokenValue,
+              'accessToken': accessToken  // Keep as fallback for nginx mapping
+            },
+          });
+          console.log('[DEBUG] Request headers set - Authorization: SET (with Bearer prefix)');
+          console.log('[DEBUG] Request headers set - accessToken: SET (as fallback)');
+          console.log('[DEBUG] Authorization header value preview:', tokenValue.substring(0, 50) + '...');
+        } else {
+          request = request.clone({
+            setHeaders: { 
+              'Authorization': '',
+              'accessToken': ''
+            },
+          });
+          console.log('[DEBUG] WARNING: No token available, headers set to empty');
+        }
       }
     }
     if (request.url.includes('i18n')) {
