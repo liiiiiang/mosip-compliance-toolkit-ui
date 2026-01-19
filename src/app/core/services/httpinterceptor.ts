@@ -102,7 +102,7 @@ export class AuthInterceptor implements HttpInterceptor {
     } catch (error) {
       console.error('[DEBUG] ====== showHomePage() ERROR ======');
       console.error('[DEBUG] Error:', error);
-      console.error('[DEBUG] Error stack:', error?.stack);
+      console.error('[DEBUG] Error stack:', error instanceof Error ? error.stack : 'N/A');
       console.error('[DEBUG] ====== showHomePage() ERROR COMPLETE ======');
     } finally {
       // Reset flag after a delay to allow for normal flow

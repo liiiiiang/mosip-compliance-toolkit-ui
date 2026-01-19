@@ -182,7 +182,7 @@ export class AndroidKeycloakService {
       this.isInitialized = true;
       console.error('[DEBUG] ====== AndroidKeycloakService: init() ERROR ======');
       console.error('[DEBUG] Error:', error);
-      console.error('[DEBUG] Error stack:', error?.stack);
+      console.error('[DEBUG] Error stack:', error instanceof Error ? error.stack : 'N/A');
       console.error('[DEBUG] Timestamp:', new Date().toISOString());
       console.error('[DEBUG] ====== init() ERROR COMPLETE ======');
     });
@@ -260,7 +260,7 @@ export class AndroidKeycloakService {
       this.isLoggingIn = false;
       console.error('[DEBUG] ====== login() ERROR ======');
       console.error('[DEBUG] Error:', error);
-      console.error('[DEBUG] Error stack:', error?.stack);
+      console.error('[DEBUG] Error stack:', error instanceof Error ? error.stack : 'N/A');
       console.error('[DEBUG] isLoggingIn set to false');
       console.error('[DEBUG] ====== login() ERROR COMPLETE ======');
       throw error;

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Router } from '@angular/router';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Observable, of } from 'rxjs';
 import { map, catchError } from 'rxjs/operators';
 import { AppConfigService } from 'src/app/app-config.service';
@@ -34,9 +34,15 @@ export class AuthService {
         catchError((error) => {
           console.error('[DEBUG] ====== AuthService.isAuthenticated() ERROR ======');
           console.error('[DEBUG] Error:', error);
-          console.error('[DEBUG] Error status:', error?.status);
-          console.error('[DEBUG] Error message:', error?.message);
-          console.error('[DEBUG] Error URL:', error?.url);
+          if (error instanceof HttpErrorResponse) {
+            console.error('[DEBUG] Error status:', error.status);
+            console.error('[DEBUG] Error message:', error.message);
+            console.error('[DEBUG] Error URL:', error.url);
+          } else {
+            console.error('[DEBUG] Error status: N/A (not HttpErrorResponse)');
+            console.error('[DEBUG] Error message:', error instanceof Error ? error.message : 'N/A');
+            console.error('[DEBUG] Error URL: N/A');
+          }
           console.error('[DEBUG] Returning false');
           console.error('[DEBUG] ====== AuthService.isAuthenticated() ERROR COMPLETE ======');
           return of(false);
