@@ -5,9 +5,6 @@ import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.webkit.WebSettings;
-import android.webkit.WebViewClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.Bridge;
 
@@ -24,24 +21,14 @@ public class MainActivity extends BridgeActivity {
             if (webView != null) {
                 // 配置 WebView 设置以忽略 CORS 检查
                 WebSettings webSettings = webView.getSettings();
+                webSettings.setJavaScriptEnabled(true);
+                webSettings.setDomStorageEnabled(true);
                 webSettings.setAllowUniversalAccessFromFileURLs(true);
                 webSettings.setAllowFileAccessFromFileURLs(true);
                 webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 
-                // 设置自定义 WebViewClient 来处理 CORS
-                webView.setWebViewClient(new WebViewClient() {
-                    @Override
-                    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                        // 允许所有请求，不拦截（这样可以绕过 CORS 检查）
-                        return super.shouldInterceptRequest(view, request);
-                    }
-                    
-                    @Override
-                    public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                        // 允许所有 URL 加载
-                        return false;
-                    }
-                });
+                // 注意：不覆盖 WebViewClient，让 Capacitor 的 Bridge 处理所有请求
+                // 这样可以确保本地文件正确加载
                 
                 webView.setWebChromeClient(new WebChromeClient() {
                     @Override
@@ -57,6 +44,19 @@ public class MainActivity extends BridgeActivity {
                 });
                 
                 android.util.Log.d("MainActivity", "WebView CORS bypass settings configured");
+            }
+        }
+    }
+    
+    @Override
+    public void onResume() {
+        super.onResume();
+        // 确保 WebView 设置已应用
+        Bridge bridge = this.getBridge();
+        if (bridge != null) {
+            WebView webView = bridge.getWebView();
+            if (webView != null) {
+                android.util.Log.d("MainActivity", "onResume - WebView URL: " + webView.getUrl());
             }
         }
     }
