@@ -13,17 +13,32 @@ export class AuthService {
   ) { }
 
   isAuthenticated(): Observable<boolean> {
+      console.log('[DEBUG] ====== AuthService.isAuthenticated() CALLED ======');
+      const url = `${this.appService.getConfig().SERVICES_BASE_URL}authorize/admin/validateToken`;
+      console.log('[DEBUG] validateToken URL:', url);
+      console.log('[DEBUG] Timestamp:', new Date().toISOString());
+      
       return this.http
       .get(
-        `${
-          this.appService.getConfig().SERVICES_BASE_URL
-        }authorize/admin/validateToken`,
+        url,
         { observe: 'response' }
       )
       .pipe(
-        map((res) => res.status === 200),
+        map((res) => {
+          const isAuthenticated = res.status === 200;
+          console.log('[DEBUG] AuthService.isAuthenticated() - Response status:', res.status);
+          console.log('[DEBUG] AuthService.isAuthenticated() - Result:', isAuthenticated);
+          console.log('[DEBUG] ====== AuthService.isAuthenticated() SUCCESS ======');
+          return isAuthenticated;
+        }),
         catchError((error) => {
-          console.log(error);
+          console.error('[DEBUG] ====== AuthService.isAuthenticated() ERROR ======');
+          console.error('[DEBUG] Error:', error);
+          console.error('[DEBUG] Error status:', error?.status);
+          console.error('[DEBUG] Error message:', error?.message);
+          console.error('[DEBUG] Error URL:', error?.url);
+          console.error('[DEBUG] Returning false');
+          console.error('[DEBUG] ====== AuthService.isAuthenticated() ERROR COMPLETE ======');
           return of(false);
         })
       );

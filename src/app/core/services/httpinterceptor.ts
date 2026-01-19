@@ -29,55 +29,114 @@ export class AuthInterceptor implements HttpInterceptor {
   private isHandlingAuthError: boolean = false;
 
   showHomePage = async (isAndroidAppMode: boolean) => {
+    console.log('[DEBUG] ====== AuthInterceptor.showHomePage() CALLED ======');
+    console.log('[DEBUG] Timestamp:', new Date().toISOString());
+    console.log('[DEBUG] isAndroidAppMode:', isAndroidAppMode);
+    console.log('[DEBUG] isHandlingAuthError before check:', this.isHandlingAuthError);
+    
     // Prevent multiple simultaneous auth error handling
     if (this.isHandlingAuthError) {
-      console.log('AuthInterceptor: Auth error handling already in progress, skipping');
+      console.log('[DEBUG] WARNING: Auth error handling already in progress, skipping');
+      console.log('[DEBUG] ====== showHomePage() ABORTED (already handling) ======');
       return;
     }
 
     // For Android, check if login is already in progress
-    if (isAndroidAppMode && this.androidKeycloakService.isLoginInProgress()) {
-      console.log('AuthInterceptor: Login already in progress, skipping redirect');
-      return;
+    if (isAndroidAppMode) {
+      const isLoginInProgress = this.androidKeycloakService.isLoginInProgress();
+      console.log('[DEBUG] Android mode - isLoginInProgress:', isLoginInProgress);
+      
+      if (isLoginInProgress) {
+        console.log('[DEBUG] WARNING: Login already in progress, skipping redirect');
+        console.log('[DEBUG] ====== showHomePage() ABORTED (login in progress) ======');
+        return;
+      }
     }
 
-    console.log('AuthInterceptor: showHomePage called, isAndroidAppMode:', isAndroidAppMode);
+    console.log('[DEBUG] Proceeding with showHomePage...');
+    console.log('[DEBUG] Setting isHandlingAuthError to true');
     this.isHandlingAuthError = true;
     
-    try {
+      try {
+      // Check token before clearing
+      const tokenBeforeClear = localStorage.getItem(appConstants.ACCESS_TOKEN);
+      console.log('[DEBUG] Token in localStorage before clear:', tokenBeforeClear ? 'EXISTS (length: ' + tokenBeforeClear.length + ')' : 'NOT_EXISTS');
+      
+      // Preserve login completion flag if it exists (to prevent clearing it)
+      const loginCompletedFlag = localStorage.getItem('android_keycloak_login_completed');
+      const loginTimestamp = localStorage.getItem('android_keycloak_login_timestamp');
+      
+      console.log('[DEBUG] Clearing sessionStorage, localStorage, and cookies...');
       sessionStorage.clear();
       localStorage.clear();
       this.cookieService.deleteAll();
       
+      // Restore login completion flag if it was set (to prevent loop)
+      if (loginCompletedFlag === 'true' && loginTimestamp) {
+        localStorage.setItem('android_keycloak_login_completed', loginCompletedFlag);
+        localStorage.setItem('android_keycloak_login_timestamp', loginTimestamp);
+        console.log('[DEBUG] Preserved login completion flag to prevent loop');
+      }
+      
+      // Verify token was cleared
+      const tokenAfterClear = localStorage.getItem(appConstants.ACCESS_TOKEN);
+      console.log('[DEBUG] Token in localStorage after clear:', tokenAfterClear ? 'EXISTS (should be cleared!)' : 'NOT_EXISTS (OK)');
+      
       if (!isAndroidAppMode) {
+        console.log('[DEBUG] Web mode - redirecting to login URL');
         this.redirectService.redirect(window.location.href);
       } else {
-        console.log('AuthInterceptor: Clearing cookies and initiating login');
+        console.log('[DEBUG] Android mode - clearing cookies and initiating login');
+        console.log('[DEBUG] SERVICES_BASE_URL:', environment.SERVICES_BASE_URL);
+        console.log('[DEBUG] AUTHORIZATION cookie key:', appConstants.AUTHORIZATION);
+        
         await CapacitorCookies.deleteCookie({
           url: encodeURI(environment.SERVICES_BASE_URL),
           key: appConstants.AUTHORIZATION
         });
+        console.log('[DEBUG] Cookie deleted, calling androidKeycloakService.login()...');
+        
         await this.androidKeycloakService.login();
+        console.log('[DEBUG] androidKeycloakService.login() completed');
       }
     } catch (error) {
-      console.error('AuthInterceptor: Error in showHomePage:', error);
+      console.error('[DEBUG] ====== showHomePage() ERROR ======');
+      console.error('[DEBUG] Error:', error);
+      console.error('[DEBUG] Error stack:', error?.stack);
+      console.error('[DEBUG] ====== showHomePage() ERROR COMPLETE ======');
     } finally {
       // Reset flag after a delay to allow for normal flow
+      console.log('[DEBUG] Scheduling reset of isHandlingAuthError in 3000ms...');
       setTimeout(() => {
         this.isHandlingAuthError = false;
+        console.log('[DEBUG] isHandlingAuthError reset to false');
       }, 3000);
     }
+    console.log('[DEBUG] ====== showHomePage() COMPLETE ======');
   }
 
   addCookieForAndroid = async () => {
+    console.log('[DEBUG] ====== AuthInterceptor.addCookieForAndroid() CALLED ======');
     const accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+    console.log('[DEBUG] Access token from localStorage:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
+    console.log('[DEBUG] SERVICES_BASE_URL:', environment.SERVICES_BASE_URL);
+    console.log('[DEBUG] AUTHORIZATION cookie key:', appConstants.AUTHORIZATION);
+    
     if (accessToken) {
-      await CapacitorCookies.setCookie({
-        url: encodeURI(environment.SERVICES_BASE_URL),
-        key: appConstants.AUTHORIZATION,
-        value: accessToken ? accessToken : '',
-      });
+      try {
+        await CapacitorCookies.setCookie({
+          url: encodeURI(environment.SERVICES_BASE_URL),
+          key: appConstants.AUTHORIZATION,
+          value: accessToken ? accessToken : '',
+        });
+        console.log('[DEBUG] Cookie set successfully');
+      } catch (error) {
+        console.error('[DEBUG] ERROR setting cookie:', error);
+      }
+    } else {
+      console.log('[DEBUG] WARNING: No access token available, cookie not set');
     }
+    console.log('[DEBUG] ====== addCookieForAndroid() COMPLETE ======');
   }
   constructor(
     private redirectService: LoginRedirectService,
@@ -113,17 +172,24 @@ export class AuthInterceptor implements HttpInterceptor {
       } else {
         //for android 9,10,11 the Capacitor Cookies will set
         //the cookie header with token and 'withCredentials' work
+        console.log('[DEBUG] AuthInterceptor: Android mode - preparing request for:', request.url);
+        const tokenBeforeCookie = localStorage.getItem(appConstants.ACCESS_TOKEN);
+        console.log('[DEBUG] Token before addCookieForAndroid:', tokenBeforeCookie ? 'EXISTS' : 'NOT_EXISTS');
+        
         this.addCookieForAndroid().catch((error) => {
-          console.log(error);
+          console.error('[DEBUG] Error in addCookieForAndroid:', error);
         });
         request = request.clone({ withCredentials: true });
+        
         //for android 12+, the Capacitor Cookies and 'withCredentials' do not work
         //hence setting token as a new header 'accessToken'
         //this should be mapped to cookie header in nginx conf
         let accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+        console.log('[DEBUG] Token for accessToken header:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
         request = request.clone({
           setHeaders: { 'accessToken': accessToken ? accessToken : "" },
         });
+        console.log('[DEBUG] Request headers set - accessToken:', accessToken ? 'SET' : 'EMPTY');
       }
     }
     if (request.url.includes('i18n')) {
@@ -134,13 +200,26 @@ export class AuthInterceptor implements HttpInterceptor {
         (event) => {
           if (event instanceof HttpResponse) {
             if (event.url && event.url.split('/').includes('validateToken')) {
+              console.log('[DEBUG] ====== AuthInterceptor: validateToken RESPONSE ======');
+              console.log('[DEBUG] Status:', event.status);
+              console.log('[DEBUG] URL:', event.url);
+              console.log('[DEBUG] Timestamp:', new Date().toISOString());
+              console.log('[DEBUG] Response body:', JSON.stringify(event.body));
+              
               if (event.body.response) {
+                console.log('[DEBUG] validateToken SUCCESS - has response object');
+                console.log('[DEBUG] Token in response:', event.body.response.token ? 'EXISTS' : 'NOT_EXISTS');
+                
                 this.decoded = jwt_decode(event.body.response.token);
                 this.userProfileService.setDisplayUserName(
                   this.decoded['name']
                 );
                 this.userProfileService.setUsername(event.body.response.userId);
                 this.userProfileService.setRoles(event.body.response.role);
+                
+                console.log('[DEBUG] User info decoded - name:', this.decoded['name']);
+                console.log('[DEBUG] User info decoded - userId:', event.body.response.userId);
+                
                 //Set all attributes required for selected language
                 let langCode = this.decoded['locale'];
                 if (!langCode) {
@@ -159,7 +238,7 @@ export class AuthInterceptor implements HttpInterceptor {
                     }
                   })
                   .catch(error => {
-                    console.log(error);
+                    console.error('[DEBUG] Error checking language file:', error);
                   });
                 //Set if language is RTL or LTR
                 const rtlLanguages = this.appConfigService.getConfig()['rtlLanguages']
@@ -174,32 +253,51 @@ export class AuthInterceptor implements HttpInterceptor {
                 } else {
                   this.userProfileService.setTextDirection('ltr');
                 }
+                
+                console.log('[DEBUG] ====== validateToken SUCCESS COMPLETE ======');
               }
+              
               if (
                 event.body.errors !== null &&
-                event.body.errors.length > 0 &&
-                (event.body.errors[0]['errorCode'] ===
-                  appConstants.AUTH_ERROR_CODE[0] ||
-                  event.body.errors[0]['errorCode'] ===
-                  appConstants.AUTH_ERROR_CODE[1])
+                event.body.errors.length > 0
               ) {
-                console.log('AuthInterceptor: Authentication error in validateToken response');
-                // For Android, only trigger login if not already logging in
-                if (isAndroidAppMode) {
-                  if (!this.androidKeycloakService.isLoginInProgress()) {
+                console.log('[DEBUG] ====== validateToken ERROR RESPONSE ======');
+                console.log('[DEBUG] Errors array:', JSON.stringify(event.body.errors));
+                console.log('[DEBUG] First error:', event.body.errors[0]);
+                console.log('[DEBUG] First error code:', event.body.errors[0]?.['errorCode']);
+                console.log('[DEBUG] AUTH_ERROR_CODE constants:', appConstants.AUTH_ERROR_CODE);
+                
+                const isAuthError = (
+                  event.body.errors[0]['errorCode'] === appConstants.AUTH_ERROR_CODE[0] ||
+                  event.body.errors[0]['errorCode'] === appConstants.AUTH_ERROR_CODE[1]
+                );
+                console.log('[DEBUG] Is authentication error:', isAuthError);
+                
+                if (isAuthError) {
+                  console.log('[DEBUG] Authentication error in validateToken response');
+                  // For Android, only trigger login if not already logging in
+                  if (isAndroidAppMode) {
+                    const isLoginInProgress = this.androidKeycloakService.isLoginInProgress();
+                    console.log('[DEBUG] Android mode - isLoginInProgress:', isLoginInProgress);
+                    
+                    if (!isLoginInProgress) {
+                      console.log('[DEBUG] Triggering showHomePage due to validateToken auth error...');
+                      this.showHomePage(isAndroidAppMode)
+                        .catch((error) => {
+                          console.error('[DEBUG] ERROR in showHomePage:', error);
+                        });
+                    } else {
+                      console.log('[DEBUG] Login in progress, skipping error handling');
+                    }
+                  } else {
+                    console.log('[DEBUG] Triggering showHomePage (Web mode)...');
                     this.showHomePage(isAndroidAppMode)
                       .catch((error) => {
-                        console.error('AuthInterceptor: Error in showHomePage:', error);
+                        console.error('[DEBUG] ERROR in showHomePage:', error);
                       });
-                  } else {
-                    console.log('AuthInterceptor: Login in progress, skipping error handling');
                   }
-                } else {
-                  this.showHomePage(isAndroidAppMode)
-                    .catch((error) => {
-                      console.error('AuthInterceptor: Error in showHomePage:', error);
-                    });
                 }
+                console.log('[DEBUG] ====== validateToken ERROR HANDLING COMPLETE ======');
               }
             }
           }
@@ -211,35 +309,78 @@ export class AuthInterceptor implements HttpInterceptor {
             const status = err.status;
             const isAuthError = status === 401 || status === 403;
             
-            console.log('AuthInterceptor: HTTP error:', {
-              status,
-              url: err.url,
-              isLocalUrl,
-              isAuthError
-            });
+            console.log('[DEBUG] ====== AuthInterceptor: HTTP ERROR ======');
+            console.log('[DEBUG] Status:', status);
+            console.log('[DEBUG] URL:', err.url);
+            console.log('[DEBUG] isLocalUrl:', isLocalUrl);
+            console.log('[DEBUG] isAuthError:', isAuthError);
+            console.log('[DEBUG] isAndroidAppMode:', isAndroidAppMode);
+            console.log('[DEBUG] Timestamp:', new Date().toISOString());
+            
+            // Check token state at error time
+            const tokenAtError = localStorage.getItem(appConstants.ACCESS_TOKEN);
+            console.log('[DEBUG] Token in localStorage at error time:', tokenAtError ? 'EXISTS (length: ' + tokenAtError.length + ')' : 'NOT_EXISTS');
+            
+            if (err.url) {
+              const isValidateToken = err.url.includes('validateToken');
+              console.log('[DEBUG] Is validateToken request:', isValidateToken);
+            }
 
             if (isAuthError && !isLocalUrl) {
-              // For Android, only trigger login if not already logging in
+              console.log('[DEBUG] Auth error detected, checking if should trigger login...');
+              
+              // For Android, check if login was just completed (to prevent loop)
               if (isAndroidAppMode) {
-                if (!this.androidKeycloakService.isLoginInProgress()) {
+                const loginCompletedFlag = localStorage.getItem('android_keycloak_login_completed');
+                const loginTimestamp = localStorage.getItem('android_keycloak_login_timestamp');
+                console.log('[DEBUG] Login completion flag:', loginCompletedFlag);
+                console.log('[DEBUG] Login timestamp:', loginTimestamp);
+                
+                if (loginCompletedFlag === 'true') {
+                  const timestamp = loginTimestamp ? parseInt(loginTimestamp) : 0;
+                  const elapsed = Date.now() - timestamp;
+                  console.log('[DEBUG] Login was recently completed, elapsed time (ms):', elapsed);
+                  
+                  if (elapsed < 10000) { // Within 10 seconds
+                    console.log('[DEBUG] WARNING: Auth error detected but login was just completed!');
+                    console.log('[DEBUG] This might be a token sync issue - NOT triggering login to prevent loop');
+                    console.log('[DEBUG] Token in localStorage:', localStorage.getItem(appConstants.ACCESS_TOKEN) ? 'EXISTS' : 'NOT_EXISTS');
+                    console.log('[DEBUG] ====== HTTP ERROR HANDLING COMPLETE (loop prevention) ======');
+                    return; // Don't trigger login to prevent loop
+                  } else {
+                    console.log('[DEBUG] Login completion flag is stale (more than 10 seconds), proceeding with normal flow');
+                    localStorage.removeItem('android_keycloak_login_completed');
+                    localStorage.removeItem('android_keycloak_login_timestamp');
+                  }
+                }
+                
+                const isLoginInProgress = this.androidKeycloakService.isLoginInProgress();
+                console.log('[DEBUG] Android mode - isLoginInProgress:', isLoginInProgress);
+                
+                if (!isLoginInProgress) {
+                  console.log('[DEBUG] Triggering showHomePage (Android mode)...');
                   this.showHomePage(isAndroidAppMode)
                     .catch((error) => {
-                      console.error('AuthInterceptor: Error in showHomePage:', error);
+                      console.error('[DEBUG] ERROR in showHomePage:', error);
                     });
                 } else {
-                  console.log('AuthInterceptor: Login in progress, skipping error handling');
+                  console.log('[DEBUG] Login in progress, skipping error handling');
                 }
               } else {
                 // For web, always trigger redirect
+                console.log('[DEBUG] Triggering showHomePage (Web mode)...');
                 this.showHomePage(isAndroidAppMode)
                   .catch((error) => {
-                    console.error('AuthInterceptor: Error in showHomePage:', error);
+                    console.error('[DEBUG] ERROR in showHomePage:', error);
                   });
               }
             } else if (!isLocalUrl && (status === 0 || status >= 500)) {
               // Network errors or server errors - don't trigger login
-              console.log('AuthInterceptor: Network or server error, not triggering login');
+              console.log('[DEBUG] Network or server error, not triggering login');
+            } else {
+              console.log('[DEBUG] Error condition not met for login trigger');
             }
+            console.log('[DEBUG] ====== HTTP ERROR HANDLING COMPLETE ======');
           }
         }
       )
