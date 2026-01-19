@@ -197,24 +197,22 @@ export class AuthInterceptor implements HttpInterceptor {
           // Check if token already has Bearer prefix
           const tokenValue = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
           
-          // Set both Authorization header (standard) and accessToken header (fallback)
+          // Set headers - use lowercase 'authorization' to avoid CORS issues
+          // Some servers are case-sensitive for CORS preflight
           request = request.clone({
             setHeaders: { 
-              'Authorization': tokenValue,
-              'accessToken': accessToken  // Keep as fallback for nginx mapping
+              'authorization': tokenValue,  // Lowercase for CORS compatibility
+              'Authorization': tokenValue,  // Also set uppercase (standard)
+              'accessToken': accessToken     // Keep as fallback for nginx mapping
             },
           });
-          console.log('[DEBUG] Request headers set - Authorization: SET (with Bearer prefix)');
+          console.log('[DEBUG] Request headers set - authorization (lowercase): SET (with Bearer prefix)');
+          console.log('[DEBUG] Request headers set - Authorization (uppercase): SET (with Bearer prefix)');
           console.log('[DEBUG] Request headers set - accessToken: SET (as fallback)');
           console.log('[DEBUG] Authorization header value preview:', tokenValue.substring(0, 50) + '...');
         } else {
-          request = request.clone({
-            setHeaders: { 
-              'Authorization': '',
-              'accessToken': ''
-            },
-          });
-          console.log('[DEBUG] WARNING: No token available, headers set to empty');
+          // Don't set empty headers to avoid CORS preflight issues
+          console.log('[DEBUG] WARNING: No token available, headers not set (to avoid CORS issues)');
         }
       }
     }

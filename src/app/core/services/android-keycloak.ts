@@ -118,8 +118,28 @@ export class AndroidKeycloakService {
       console.error('[DEBUG] Error data:', JSON.stringify(errorData));
       console.error('[DEBUG] Timestamp:', new Date().toISOString());
       console.error('[DEBUG] isLoggingIn before:', this.isLoggingIn);
+      
+      // Check if error is 'login_required' - this means we need to login
+      const error = errorData?.error || errorData;
+      const isLoginRequired = error === 'login_required' || (typeof error === 'string' && error.includes('login_required'));
+      
+      console.error('[DEBUG] Error type:', error);
+      console.error('[DEBUG] Is login required:', isLoginRequired);
+      
       this.isLoggingIn = false;
       console.error('[DEBUG] isLoggingIn after:', this.isLoggingIn);
+      
+      // If login is required and we're not already logging in, trigger login
+      if (isLoginRequired && !this.isLoggingIn && this.isInitialized) {
+        console.log('[DEBUG] Login required detected, triggering login...');
+        // Use setTimeout to avoid blocking the error handler
+        setTimeout(() => {
+          this.login().catch((loginError) => {
+            console.error('[DEBUG] Error triggering login from onAuthError:', loginError);
+          });
+        }, 100);
+      }
+      
       console.error('[DEBUG] ====== onAuthError COMPLETE ======');
     };
 
@@ -152,7 +172,7 @@ export class AndroidKeycloakService {
       enableLogging: true,
       useNonce: false,
       redirectUri: environment.redirectUri,
-      onLoad: 'check-sso', // Check if already authenticated
+      onLoad: 'login-required', // Changed from 'check-sso' to 'login-required' to trigger login when not authenticated
       checkLoginIframe: false // Disable iframe check for mobile
     }).then((authenticated) => {
       this.isInitialized = true;
@@ -176,6 +196,16 @@ export class AndroidKeycloakService {
         console.log('[DEBUG] Not authenticated after init');
         const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
         console.log('[DEBUG] Existing token in localStorage:', existingToken ? 'EXISTS (may be stale)' : 'NOT_EXISTS');
+        
+        // If not authenticated and no token, login should have been triggered by 'login-required'
+        // But if it wasn't (e.g., due to error), manually trigger login
+        if (!existingToken && !this.isLoggingIn) {
+          console.log('[DEBUG] No token found and not logging in, will trigger login...');
+          // Don't await here to avoid blocking init
+          this.login().catch((loginError) => {
+            console.error('[DEBUG] Error triggering login after init:', loginError);
+          });
+        }
       }
       console.log('[DEBUG] ====== init() COMPLETE ======');
     }).catch((error) => {
@@ -184,6 +214,15 @@ export class AndroidKeycloakService {
       console.error('[DEBUG] Error:', error);
       console.error('[DEBUG] Error stack:', error instanceof Error ? error.stack : 'N/A');
       console.error('[DEBUG] Timestamp:', new Date().toISOString());
+      
+      // If init fails and we're not authenticated, try to trigger login
+      if (!this.androidKeycloak.authenticated && !this.isLoggingIn) {
+        console.log('[DEBUG] Init failed, attempting to trigger login...');
+        this.login().catch((loginError) => {
+          console.error('[DEBUG] Error triggering login after init error:', loginError);
+        });
+      }
+      
       console.error('[DEBUG] ====== init() ERROR COMPLETE ======');
     });
   }
