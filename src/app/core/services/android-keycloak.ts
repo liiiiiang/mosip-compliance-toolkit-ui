@@ -19,17 +19,39 @@ export class AndroidKeycloakService {
   }
 
   public setUp() {
+    // Prevent duplicate setup
+    if (this.androidKeycloak) {
+      return;
+    }
+    
     this.androidKeycloak = Keycloak({
       clientId: environment.IAM_CLIENT_ID,
       realm: environment.IAM_REALM,
       url: environment.IAM_URL,
     });
+    
+    let isReloading = false; // Flag to prevent duplicate reloads
     this.androidKeycloak.onAuthSuccess = () => {
+      // Prevent duplicate processing
+      if (isReloading) {
+        return;
+      }
+      
       // save tokens to device storage
       const accessToken = this.androidKeycloak.token;
       if (accessToken) {
         localStorage.setItem(appConstants.ACCESS_TOKEN, accessToken);
-        window.location.reload();
+        isReloading = true;
+        
+        // Clear URL parameters before reloading to prevent duplicate code exchange
+        // This prevents the second CODE_TO_TOKEN attempt with an already-used authorization code
+        const urlWithoutParams = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, urlWithoutParams);
+        
+        // Use setTimeout to ensure URL is cleared before reload
+        setTimeout(() => {
+          window.location.reload();
+        }, 100);
       }
     };
     this.androidKeycloak.init({

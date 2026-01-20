@@ -73,13 +73,17 @@ export class AuthInterceptor implements HttpInterceptor {
         console.log('Token length:', accessToken ? accessToken.length : 0);
         // Verify cookie was set by trying to get it
         try {
-          const cookies = await CapacitorCookies.getCookies({ url: cookieUrl });
-          const cookieList = cookies['cookies'] || cookies.cookies;
-          const authCookie = cookieList?.find((c: any) => c.name === appConstants.AUTHORIZATION);
-          if (authCookie) {
-            console.log('Cookie verified - found Authorization cookie:', authCookie.name);
+          const cookiesResult = await CapacitorCookies.getCookies({ url: cookieUrl });
+          const cookieList = (cookiesResult as any)['cookies'] || (cookiesResult as any).cookies;
+          if (Array.isArray(cookieList)) {
+            const authCookie = cookieList.find((c: any) => c.name === appConstants.AUTHORIZATION);
+            if (authCookie) {
+              console.log('Cookie verified - found Authorization cookie:', authCookie.name);
+            } else {
+              console.warn('Cookie verification failed - Authorization cookie not found. Available cookies:', cookieList.map((c: any) => c.name));
+            }
           } else {
-            console.warn('Cookie verification failed - Authorization cookie not found in:', cookieList?.map((c: any) => c.name));
+            console.log('Cookie set completed (verification skipped due to type mismatch)');
           }
         } catch (verifyError) {
           console.warn('Could not verify cookie:', verifyError);
