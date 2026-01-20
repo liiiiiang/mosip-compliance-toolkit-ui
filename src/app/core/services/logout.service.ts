@@ -19,8 +19,16 @@ export class LogoutService {
     if (isAndroidAppMode) {
       await this.androidKeycloakService.getInstance().logout();
       this.androidKeycloakService.getInstance().clearToken();
+      // Extract domain from SERVICES_BASE_URL for Cookie deletion
+      let cookieUrl = environment.SERVICES_BASE_URL;
+      try {
+        const urlObj = new URL(environment.SERVICES_BASE_URL);
+        cookieUrl = `${urlObj.protocol}//${urlObj.host}`;
+      } catch (e) {
+        console.warn('Failed to parse SERVICES_BASE_URL for cookie domain:', e);
+      }
       await CapacitorCookies.deleteCookie({
-        url: encodeURI(environment.SERVICES_BASE_URL),
+        url: cookieUrl,
         key: appConstants.AUTHORIZATION
       });
       return true;

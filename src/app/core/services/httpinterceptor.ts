@@ -33,8 +33,16 @@ export class AuthInterceptor implements HttpInterceptor {
     if (!isAndroidAppMode) {
       this.redirectService.redirect(window.location.href);
     } else {
+      // Extract domain from SERVICES_BASE_URL for Cookie deletion
+      let cookieUrl = environment.SERVICES_BASE_URL;
+      try {
+        const urlObj = new URL(environment.SERVICES_BASE_URL);
+        cookieUrl = `${urlObj.protocol}//${urlObj.host}`;
+      } catch (e) {
+        console.warn('Failed to parse SERVICES_BASE_URL for cookie domain:', e);
+      }
       await CapacitorCookies.deleteCookie({
-        url: encodeURI(environment.SERVICES_BASE_URL),
+        url: cookieUrl,
         key: appConstants.AUTHORIZATION
       });
       await this.androidKeycloakService.getInstance().login();
@@ -44,11 +52,29 @@ export class AuthInterceptor implements HttpInterceptor {
   addCookieForAndroid = async () => {
     const accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
     if (accessToken) {
-      await CapacitorCookies.setCookie({
-        url: encodeURI(environment.SERVICES_BASE_URL),
-        key: appConstants.AUTHORIZATION,
-        value: accessToken ? accessToken : '',
-      });
+      // Extract domain from SERVICES_BASE_URL for Cookie setting
+      // CapacitorCookies.setCookie requires only the domain part, not the full URL
+      let cookieUrl = environment.SERVICES_BASE_URL;
+      try {
+        const urlObj = new URL(environment.SERVICES_BASE_URL);
+        cookieUrl = `${urlObj.protocol}//${urlObj.host}`;
+        console.log('Setting cookie for domain:', cookieUrl);
+      } catch (e) {
+        // If URL parsing fails, use the original URL
+        console.warn('Failed to parse SERVICES_BASE_URL for cookie domain:', e);
+      }
+      try {
+        await CapacitorCookies.setCookie({
+          url: cookieUrl,
+          key: appConstants.AUTHORIZATION,
+          value: accessToken ? accessToken : '',
+        });
+        console.log('Cookie set successfully for:', cookieUrl);
+      } catch (error) {
+        console.error('Failed to set cookie:', error);
+      }
+    } else {
+      console.warn('No access token found in localStorage');
     }
   }
   constructor(
