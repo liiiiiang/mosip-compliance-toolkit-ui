@@ -175,45 +175,33 @@ export class AuthInterceptor implements HttpInterceptor {
           setHeaders: { 'X-XSRF-TOKEN': this.cookieService.get('XSRF-TOKEN') },
         });
       } else {
-        //for android 9,10,11 the Capacitor Cookies will set
-        //the cookie header with token and 'withCredentials' work
+        // Android mode: Use only accessToken header to avoid CORS preflight issues
+        // This approach avoids triggering CORS preflight requests by not using
+        // 'authorization' or 'Authorization' headers, and not using withCredentials
         console.log('[DEBUG] AuthInterceptor: Android mode - preparing request for:', request.url);
-        const tokenBeforeCookie = localStorage.getItem(appConstants.ACCESS_TOKEN);
-        console.log('[DEBUG] Token before addCookieForAndroid:', tokenBeforeCookie ? 'EXISTS' : 'NOT_EXISTS');
         
-        this.addCookieForAndroid().catch((error) => {
-          console.error('[DEBUG] Error in addCookieForAndroid:', error);
-        });
-        request = request.clone({ withCredentials: true });
-        
-        //for android 12+, the Capacitor Cookies and 'withCredentials' do not work
-        //hence setting token as headers
-        //1. Set standard Authorization header (backend expects this)
-        //2. Also set accessToken header as fallback (for nginx mapping if needed)
         let accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
         console.log('[DEBUG] Token for headers:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
         
         if (accessToken) {
-          // Check if token already has Bearer prefix
-          const tokenValue = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`;
-          
-          // Set headers - use lowercase 'authorization' to avoid CORS issues
-          // Some servers are case-sensitive for CORS preflight
+          // Only use accessToken header to avoid CORS preflight
+          // This is a simple header that typically doesn't trigger preflight
           request = request.clone({
             setHeaders: { 
-              'authorization': tokenValue,  // Lowercase for CORS compatibility
-              'Authorization': tokenValue,  // Also set uppercase (standard)
-              'accessToken': accessToken     // Keep as fallback for nginx mapping
+              'accessToken': accessToken  // Only use this header to avoid CORS preflight
             },
           });
-          console.log('[DEBUG] Request headers set - authorization (lowercase): SET (with Bearer prefix)');
-          console.log('[DEBUG] Request headers set - Authorization (uppercase): SET (with Bearer prefix)');
-          console.log('[DEBUG] Request headers set - accessToken: SET (as fallback)');
-          console.log('[DEBUG] Authorization header value preview:', tokenValue.substring(0, 50) + '...');
+          console.log('[DEBUG] Request headers set - accessToken: SET (CORS-safe approach)');
+          console.log('[DEBUG] NOT setting authorization/Authorization headers to avoid CORS preflight');
+          console.log('[DEBUG] NOT using withCredentials to avoid CORS conflicts');
         } else {
-          // Don't set empty headers to avoid CORS preflight issues
-          console.log('[DEBUG] WARNING: No token available, headers not set (to avoid CORS issues)');
+          console.log('[DEBUG] WARNING: No token available, headers not set');
         }
+        
+        // Explicitly set withCredentials to false to avoid CORS conflicts
+        // When withCredentials is true, Access-Control-Allow-Origin cannot be '*'
+        request = request.clone({ withCredentials: false });
+        console.log('[DEBUG] withCredentials set to false to avoid CORS conflicts');
       }
     }
     if (request.url.includes('i18n')) {

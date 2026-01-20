@@ -53,13 +53,22 @@ public class MainActivity extends BridgeActivity {
                 webView.post(new Runnable() {
                     @Override
                     public void run() {
-                        // 保存原始的 WebViewClient（Capacitor 的 Bridge 设置的）
-                        originalWebViewClient = webView.getWebViewClient();
-                        
-                        // 创建自定义 WebViewClient 来拦截 CORS 预检请求
-                        webView.setWebViewClient(new CORSBypassWebViewClient(originalWebViewClient));
-                        
-                        android.util.Log.d("MainActivity", "WebView CORS bypass WebViewClient configured");
+                        try {
+                            // 保存原始的 WebViewClient（Capacitor 的 Bridge 设置的）
+                            originalWebViewClient = webView.getWebViewClient();
+                            android.util.Log.d("MainActivity", "Original WebViewClient: " + (originalWebViewClient != null ? originalWebViewClient.getClass().getName() : "null"));
+                            
+                            // 创建自定义 WebViewClient 来拦截 CORS 预检请求
+                            WebViewClient corsClient = new CORSBypassWebViewClient(originalWebViewClient);
+                            webView.setWebViewClient(corsClient);
+                            
+                            // 验证设置是否成功
+                            WebViewClient currentClient = webView.getWebViewClient();
+                            android.util.Log.d("MainActivity", "Current WebViewClient: " + (currentClient != null ? currentClient.getClass().getName() : "null"));
+                            android.util.Log.d("MainActivity", "WebView CORS bypass WebViewClient configured successfully");
+                        } catch (Exception e) {
+                            android.util.Log.e("MainActivity", "Error configuring CORS bypass WebViewClient", e);
+                        }
                     }
                 });
                 
@@ -83,30 +92,52 @@ public class MainActivity extends BridgeActivity {
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
             // 拦截 OPTIONS 预检请求（CORS preflight）
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                String method = request.getMethod();
-                String url = request.getUrl().toString();
-                
-                android.util.Log.d("CORSBypass", "Intercepting request: " + method + " " + url);
-                
-                // 如果是 OPTIONS 预检请求，返回允许的 CORS 响应
-                if ("OPTIONS".equalsIgnoreCase(method)) {
-                    android.util.Log.d("CORSBypass", "Handling OPTIONS preflight request for: " + url);
+                try {
+                    String method = request.getMethod();
+                    String url = request.getUrl().toString();
                     
-                    Map<String, String> headers = new HashMap<>();
-                    headers.put("Access-Control-Allow-Origin", "*");
-                    headers.put("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-                    headers.put("Access-Control-Allow-Headers", "Content-Type, Authorization, authorization, accessToken, X-Requested-With");
-                    headers.put("Access-Control-Allow-Credentials", "true");
-                    headers.put("Access-Control-Max-Age", "3600");
+                    // 记录所有请求（用于调试）
+                    android.util.Log.d("CORSBypass", "Intercepting request: " + method + " " + url);
                     
-                    return new WebResourceResponse(
-                        "text/plain",
-                        "UTF-8",
-                        200,
-                        "OK",
-                        headers,
-                        new ByteArrayInputStream("".getBytes())
-                    );
+                    // 获取请求的 Origin header（如果存在）
+                    String origin = null;
+                    if (request.getRequestHeaders() != null) {
+                        origin = request.getRequestHeaders().get("Origin");
+                        android.util.Log.d("CORSBypass", "Request headers: " + request.getRequestHeaders().toString());
+                    }
+                    // 如果没有 Origin header，使用默认值（Capacitor Android 默认使用 http://localhost）
+                    if (origin == null || origin.isEmpty()) {
+                        origin = "http://localhost";
+                    }
+                    
+                    android.util.Log.d("CORSBypass", "Request Origin: " + origin);
+                    
+                    // 如果是 OPTIONS 预检请求，返回允许的 CORS 响应
+                    if ("OPTIONS".equalsIgnoreCase(method)) {
+                        android.util.Log.d("CORSBypass", "*** Handling OPTIONS preflight request for: " + url);
+                        
+                        Map<String, String> headers = new HashMap<>();
+                        // 使用具体的 origin 而不是 *，因为请求使用了 withCredentials: true
+                        headers.put("Access-Control-Allow-Origin", origin);
+                        headers.put("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+                        headers.put("Access-Control-Allow-Headers", "Content-Type, Authorization, authorization, accessToken, X-Requested-With");
+                        headers.put("Access-Control-Allow-Credentials", "true");
+                        headers.put("Access-Control-Max-Age", "3600");
+                        
+                        android.util.Log.d("CORSBypass", "*** Returning CORS response with Origin: " + origin);
+                        android.util.Log.d("CORSBypass", "*** CORS headers: " + headers.toString());
+                        
+                        return new WebResourceResponse(
+                            "text/plain",
+                            "UTF-8",
+                            200,
+                            "OK",
+                            headers,
+                            new ByteArrayInputStream("".getBytes())
+                        );
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e("CORSBypass", "Error in shouldInterceptRequest", e);
                 }
             }
             
