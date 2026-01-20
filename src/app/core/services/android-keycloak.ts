@@ -24,6 +24,26 @@ export class AndroidKeycloakService {
       return;
     }
     
+    // Check if we're in the middle of processing (after reload)
+    // This happens when onAuthSuccess triggered reload but URL still has code params
+    // Clean URL immediately before keycloak init parses it
+    const isProcessing = sessionStorage.getItem('keycloak_auth_processing');
+    if (isProcessing) {
+      console.log('Keycloak setUp: Detected post-auth reload, cleaning URL to prevent duplicate code exchange');
+      const cleanUrl = window.location.origin + window.location.pathname;
+      // Force clear ALL URL parameters and fragments immediately
+      if (window.location.search || window.location.hash) {
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+      // Clear the flag after cleaning URL
+      sessionStorage.removeItem('keycloak_auth_processing');
+      // If we already have a token, we don't need to process the callback again
+      const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+      if (existingToken) {
+        console.log('Keycloak setUp: Token already exists, skipping callback processing');
+      }
+    }
+    
     this.androidKeycloak = Keycloak({
       clientId: environment.IAM_CLIENT_ID,
       realm: environment.IAM_REALM,
@@ -34,26 +54,45 @@ export class AndroidKeycloakService {
     this.androidKeycloak.onAuthSuccess = () => {
       // Prevent duplicate processing
       if (isReloading) {
+        console.log('onAuthSuccess: Already processing, skipping');
+        return;
+      }
+      
+      // Check if we already have a token (prevent duplicate processing after reload)
+      const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+      if (existingToken && this.androidKeycloak.token === existingToken) {
+        console.log('onAuthSuccess: Token already exists and matches, skipping reload');
         return;
       }
       
       // save tokens to device storage
       const accessToken = this.androidKeycloak.token;
       if (accessToken) {
+        console.log('onAuthSuccess: Saving token and preparing reload');
         localStorage.setItem(appConstants.ACCESS_TOKEN, accessToken);
+        
+        // Mark that we're processing to prevent duplicate calls
+        sessionStorage.setItem('keycloak_auth_processing', 'true');
         isReloading = true;
         
-        // Clear URL parameters before reloading to prevent duplicate code exchange
+        // Clear ALL URL parameters and fragments before reloading
         // This prevents the second CODE_TO_TOKEN attempt with an already-used authorization code
-        const urlWithoutParams = window.location.origin + window.location.pathname;
-        window.history.replaceState({}, document.title, urlWithoutParams);
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
         
-        // Use setTimeout to ensure URL is cleared before reload
+        // Force clear any remaining query params by navigating to clean URL
+        // Use a longer timeout to ensure URL is fully cleared
         setTimeout(() => {
+          // Double-check URL is clean
+          if (window.location.search || window.location.hash) {
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+          // Keep the flag during reload - it will be cleared after init checks
           window.location.reload();
-        }, 100);
+        }, 200);
       }
     };
+    
     this.androidKeycloak.init({
       adapter: 'capacitor-native',
       responseMode: 'query',
@@ -61,7 +100,7 @@ export class AndroidKeycloakService {
       useNonce: false,
       redirectUri: environment.redirectUri
     }).catch((error) => {
-      console.log(error);
+      console.log('Keycloak init error:', error);
     });
   }
   getInstance() {
