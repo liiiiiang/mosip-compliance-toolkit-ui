@@ -70,6 +70,20 @@ export class AuthInterceptor implements HttpInterceptor {
           value: accessToken ? accessToken : '',
         });
         console.log('Cookie set successfully for:', cookieUrl);
+        console.log('Token length:', accessToken ? accessToken.length : 0);
+        // Verify cookie was set by trying to get it
+        try {
+          const cookies = await CapacitorCookies.getCookies({ url: cookieUrl });
+          const cookieList = cookies['cookies'] || cookies.cookies;
+          const authCookie = cookieList?.find((c: any) => c.name === appConstants.AUTHORIZATION);
+          if (authCookie) {
+            console.log('Cookie verified - found Authorization cookie:', authCookie.name);
+          } else {
+            console.warn('Cookie verification failed - Authorization cookie not found in:', cookieList?.map((c: any) => c.name));
+          }
+        } catch (verifyError) {
+          console.warn('Could not verify cookie:', verifyError);
+        }
       } catch (error) {
         console.error('Failed to set cookie:', error);
       }
