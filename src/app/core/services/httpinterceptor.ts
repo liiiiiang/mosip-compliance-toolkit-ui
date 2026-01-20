@@ -175,33 +175,33 @@ export class AuthInterceptor implements HttpInterceptor {
           setHeaders: { 'X-XSRF-TOKEN': this.cookieService.get('XSRF-TOKEN') },
         });
       } else {
-        // Android mode: Use only accessToken header to avoid CORS preflight issues
-        // This approach avoids triggering CORS preflight requests by not using
-        // 'authorization' or 'Authorization' headers, and not using withCredentials
+        // Android mode: CORS is now handled by CORSBypassWebViewClient in MainActivity.java
+        // Backend expects token in Cookie named "Authorization" (not in HTTP header)
+        // So we need withCredentials: true to send cookies
         console.log('[DEBUG] AuthInterceptor: Android mode - preparing request for:', request.url);
         
+        // Set withCredentials to true so cookies are sent to server
+        // CORS preflight is handled by CORSBypassWebViewClient, so this is safe now
+        request = request.clone({ withCredentials: true });
+        console.log('[DEBUG] withCredentials set to true (CORS bypassed by CORSBypassWebViewClient)');
+        console.log('[DEBUG] Cookie "Authorization" should be sent automatically with withCredentials: true');
+        
+        // Also set accessToken header as fallback (in case backend supports it)
         let accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
         console.log('[DEBUG] Token for headers:', accessToken ? 'EXISTS (length: ' + accessToken.length + ')' : 'NOT_EXISTS');
         
         if (accessToken) {
-          // Only use accessToken header to avoid CORS preflight
-          // This is a simple header that typically doesn't trigger preflight
+          // Set accessToken header as fallback (backend primarily uses Cookie)
           request = request.clone({
             setHeaders: { 
-              'accessToken': accessToken  // Only use this header to avoid CORS preflight
+              'accessToken': accessToken  // Fallback header (backend uses Cookie primarily)
             },
           });
-          console.log('[DEBUG] Request headers set - accessToken: SET (CORS-safe approach)');
-          console.log('[DEBUG] NOT setting authorization/Authorization headers to avoid CORS preflight');
-          console.log('[DEBUG] NOT using withCredentials to avoid CORS conflicts');
+          console.log('[DEBUG] Request headers set - accessToken: SET (as fallback)');
+          console.log('[DEBUG] Primary auth method: Cookie "Authorization" (sent via withCredentials: true)');
         } else {
           console.log('[DEBUG] WARNING: No token available, headers not set');
         }
-        
-        // Explicitly set withCredentials to false to avoid CORS conflicts
-        // When withCredentials is true, Access-Control-Allow-Origin cannot be '*'
-        request = request.clone({ withCredentials: false });
-        console.log('[DEBUG] withCredentials set to false to avoid CORS conflicts');
       }
     }
     if (request.url.includes('i18n')) {
