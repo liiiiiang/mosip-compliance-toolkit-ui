@@ -139,12 +139,22 @@ export class AuthInterceptor implements HttpInterceptor {
         });
         request = request.clone({ withCredentials: true });
         //for android 12+, the Capacitor Cookies and 'withCredentials' do not work
-        //hence setting token as a new header 'accessToken'
-        //this should be mapped to cookie header in nginx conf
+        //hence setting token as headers: 'accessToken' (for nginx mapping) and 'Authorization' (for backend)
         let accessToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
-        request = request.clone({
-          setHeaders: { 'accessToken': accessToken ? accessToken : "" },
-        });
+        if (accessToken) {
+          console.log('[HTTP-INTERCEPTOR] Setting Authorization header for request:', request.url);
+          request = request.clone({
+            setHeaders: { 
+              'accessToken': accessToken,
+              'Authorization': `Bearer ${accessToken}`
+            },
+          });
+        } else {
+          console.warn('[HTTP-INTERCEPTOR] No access token found, sending request without Authorization header:', request.url);
+          request = request.clone({
+            setHeaders: { 'accessToken': "" },
+          });
+        }
       }
     }
     if (request.url.includes('i18n')) {
