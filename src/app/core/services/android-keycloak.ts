@@ -2,6 +2,7 @@ import * as Keycloak from 'src/app/lib/keycloak';
 import * as appConstants from 'src/app/app.constants';
 import { Injectable } from '@angular/core';
 import { environment } from 'src/environments/environment';
+import { CapacitorCookies } from '@capacitor/core';
 
 @Injectable({
   providedIn: 'root',
@@ -103,6 +104,49 @@ export class AndroidKeycloakService {
             }
             
             if (queryString) {
+              // Extract state parameter to restore Keycloak callback storage
+              const urlParams = new URLSearchParams(queryString);
+              const state = urlParams.get('state');
+              
+              // Try to restore cookies from sessionStorage if available
+              // This helps when Chrome cookies don't transfer to WebView
+              if (state) {
+                console.log('[ANDROID-KEYCLOAK] Attempting to restore OAuth state cookies', {
+                  state: state.substring(0, 20) + '...'
+                });
+                
+                // Check if we have state stored in sessionStorage (backup mechanism)
+                const storedState = sessionStorage.getItem(`kc-state-backup-${state}`);
+                if (storedState) {
+                  console.log('[ANDROID-KEYCLOAK] Found backup state in sessionStorage, restoring cookie');
+                  
+                  // Restore the cookie using document.cookie directly
+                  // This must happen BEFORE Keycloak processes the callback
+                  try {
+                    const expires = new Date(Date.now() + 60 * 60 * 1000).toUTCString(); // 1 hour
+                    document.cookie = `kc-callback-${state}=${storedState}; expires=${expires}; path=/`;
+                    console.log('[ANDROID-KEYCLOAK] Cookie restored via document.cookie successfully');
+                    
+                    // Also try CapacitorCookies as a backup
+                    CapacitorCookies.setCookie({
+                      url: 'http://localhost',
+                      key: `kc-callback-${state}`,
+                      value: storedState,
+                      expires: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                      path: '/'
+                    }).then(() => {
+                      console.log('[ANDROID-KEYCLOAK] Cookie also set via CapacitorCookies');
+                    }).catch((error) => {
+                      console.warn('[ANDROID-KEYCLOAK] Failed to set cookie via CapacitorCookies (non-critical):', error);
+                    });
+                  } catch (e) {
+                    console.warn('[ANDROID-KEYCLOAK] Failed to restore cookie:', e);
+                  }
+                } else {
+                  console.log('[ANDROID-KEYCLOAK] No backup state found in sessionStorage - this may cause "No OAuth state found" error');
+                }
+              }
+              
               // Update window.location with query parameters to trigger Keycloak's callback handler
               const newUrl = window.location.origin + window.location.pathname + '?' + queryString;
               console.log('[ANDROID-KEYCLOAK] Converting deep link to window location:', {
@@ -143,6 +187,54 @@ export class AndroidKeycloakService {
     }
   }
 
+  /**
+   * Patch document.cookie to backup Keycloak callback cookies to sessionStorage
+   * This ensures cookies survive the Chrome -> WebView transition
+   */
+  private setupCookieBackup() {
+    if (typeof document === 'undefined') return;
+    
+    const cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+    if (!cookieDescriptor || !cookieDescriptor.set) return;
+    
+    const originalCookieSetter = cookieDescriptor.set;
+    const originalCookieGetter = cookieDescriptor.get;
+    
+    Object.defineProperty(document, 'cookie', {
+      set: function(value: string) {
+        // Check if this is a Keycloak callback cookie
+        if (value.startsWith('kc-callback-')) {
+          try {
+            const match = value.match(/^kc-callback-([^=]+)=([^;]+)/);
+            if (match) {
+              const key = `kc-callback-${match[1]}`;
+              const cookieValue = match[2];
+              console.log('[ANDROID-KEYCLOAK] Backing up Keycloak callback cookie to sessionStorage', {
+                key: key.substring(0, 30) + '...',
+                valueLength: cookieValue.length
+              });
+              // Backup to sessionStorage
+              sessionStorage.setItem(`kc-state-backup-${match[1]}`, cookieValue);
+            }
+          } catch (e) {
+            console.warn('[ANDROID-KEYCLOAK] Failed to backup cookie:', e);
+          }
+        }
+        // Call original setter
+        originalCookieSetter.call(document, value);
+      },
+      get: function() {
+        if (originalCookieGetter) {
+          return originalCookieGetter.call(document);
+        }
+        return '';
+      },
+      configurable: true
+    });
+    
+    console.log('[ANDROID-KEYCLOAK] Cookie backup mechanism enabled');
+  }
+
   public setUp() {
     console.log('[ANDROID-KEYCLOAK DEBUG] setUp called', {
       hasInstance: !!this.androidKeycloak,
@@ -156,6 +248,10 @@ export class AndroidKeycloakService {
       console.log('[ANDROID-KEYCLOAK DEBUG] Instance already exists, skipping setup');
       return;
     }
+    
+    // Setup cookie backup mechanism BEFORE Keycloak init
+    // This ensures we capture Keycloak's cookie writes
+    this.setupCookieBackup();
     
     // Clear processed deep links on page reload (but keep them during the same session)
     // This allows retry after a failed attempt, but prevents infinite loops
