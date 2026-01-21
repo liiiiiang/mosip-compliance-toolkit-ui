@@ -971,6 +971,38 @@
                             timestamp: new Date().toISOString()
                         });
                         
+                        // CRITICAL FIX: Handle canceled requests (status 0 usually means request was canceled)
+                        if (req.status == 0) {
+                            console.error('[KEYCLOAK DEBUG] Token exchange request was canceled (status 0)', {
+                                code: code.substring(0, 20) + '...',
+                                url: url,
+                                readyState: req.readyState,
+                                timestamp: new Date().toISOString(),
+                                currentUrl: window.location.href
+                            });
+                            
+                            // Check if this was canceled due to page navigation
+                            // If so, mark the code as processed to prevent retry with same code
+                            var codeProcessedKey = 'keycloak_code_processed_' + code.substring(0, 50);
+                            sessionStorage.setItem(codeProcessedKey, 'true');
+                            console.log('[KEYCLOAK DEBUG] Marked canceled code as processed to prevent retry');
+                            
+                            // Clear processing flag
+                            sessionStorage.removeItem('keycloak_auth_processing');
+                            
+                            // Call error handler
+                            kc.onAuthError && kc.onAuthError({
+                                error: 'canceled',
+                                error_description: 'Token exchange request was canceled (likely due to page navigation)',
+                                status: 0
+                            });
+                            promise && promise.setError({
+                                error: 'canceled',
+                                error_description: 'Request canceled'
+                            });
+                            return;
+                        }
+                        
                         if (req.status == 200) {
                             var tokenResponse = JSON.parse(req.responseText);
                             console.log('[KEYCLOAK DEBUG] Token exchange successful', {

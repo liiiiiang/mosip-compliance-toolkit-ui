@@ -207,6 +207,58 @@ export class AuthInterceptor implements HttpInterceptor {
         (err) => {
           if (err instanceof HttpErrorResponse) {
             if (!isLocalUrl) {
+              // CRITICAL FIX: Prevent infinite loop by checking if we're in the middle of token exchange
+              // Don't trigger re-login if:
+              // 1. Token exchange is in progress
+              // 2. Auth just failed recently (within 30 seconds)
+              // 3. We're processing a callback
+              const isTokenExchangeInProgress = sessionStorage.getItem('keycloak_auth_processing') === 'true';
+              const authFailed = sessionStorage.getItem('keycloak_auth_failed');
+              const authFailedTime = authFailed ? parseInt(sessionStorage.getItem('keycloak_auth_failed_time') || '0') : 0;
+              const recentlyFailed = authFailed && (Date.now() - authFailedTime < 30000); // 30 seconds cooldown
+              const hasCodeInUrl = window.location.search.includes('code=');
+              
+              // Check if this is a validateToken or configs request that failed
+              // These are the ones that trigger the loop
+              const isAuthCheckRequest = err.url && (
+                err.url.includes('validateToken') || 
+                err.url.includes('/configs')
+              );
+              
+              if (isAuthCheckRequest && (isTokenExchangeInProgress || recentlyFailed || hasCodeInUrl)) {
+                console.log('[HTTP-INTERCEPTOR] Skipping re-login trigger', {
+                  reason: isTokenExchangeInProgress ? 'token_exchange_in_progress' : 
+                          recentlyFailed ? 'recent_auth_failure' : 
+                          hasCodeInUrl ? 'callback_in_progress' : 'unknown',
+                  status: err.status,
+                  url: err.url,
+                  isTokenExchangeInProgress: isTokenExchangeInProgress,
+                  recentlyFailed: recentlyFailed,
+                  hasCodeInUrl: hasCodeInUrl
+                });
+                
+                // If token exchange is in progress, wait a bit and check again
+                if (isTokenExchangeInProgress) {
+                  setTimeout(() => {
+                    const tokenNow = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
+                    if (!tokenNow) {
+                      console.warn('[HTTP-INTERCEPTOR] Token exchange completed but no token found, will retry auth check');
+                      // Token exchange completed but failed, allow retry after a delay
+                      setTimeout(() => {
+                        if (!localStorage.getItem(appConstants.ACCESS_TOKEN)) {
+                          console.log('[HTTP-INTERCEPTOR] Still no token after delay, triggering re-login');
+                          this.showHomePage(isAndroidAppMode).catch((error) => {
+                            console.log(error);
+                          });
+                        }
+                      }, 2000);
+                    }
+                  }, 3000); // Wait 3 seconds for token exchange to complete
+                }
+                return; // Don't trigger re-login immediately
+              }
+              
+              // For other errors or if conditions are met, proceed with re-login
               this.showHomePage(isAndroidAppMode)
                 .catch((error) => {
                   console.log(error);

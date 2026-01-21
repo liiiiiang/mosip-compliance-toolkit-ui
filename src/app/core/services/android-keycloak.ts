@@ -189,100 +189,47 @@ export class AndroidKeycloakService {
             return;
           }
           
-          console.log('[ANDROID-KEYCLOAK] Keycloak callback detected, processing...', {
-            url: data.url,
-            hasKeycloakInstance: !!this.androidKeycloak
-          });
+          // CRITICAL FIX: Check if token exchange is in progress
+          // If we're already processing a callback or token exchange, don't interrupt it
+          const isTokenExchangeInProgress = sessionStorage.getItem('keycloak_auth_processing') === 'true';
+          const hasExistingToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
           
-          // Mark as processing to prevent concurrent handling
-          this.isProcessingDeepLink = true;
-          this.processedDeepLinks.add(data.url);
-          
-          // Prevent browser from handling the deep link by ensuring we process it
-          // If Keycloak is already initialized, update window location to trigger its callback handler
-          // This will cause processInit to parse the callback and processCallback to handle it
-          if (this.androidKeycloak) {
-            console.log('[ANDROID-KEYCLOAK] Keycloak initialized, updating window location to trigger callback handler');
-            
-            // Extract query parameters from deep link URL (android://mosip-compliance-toolkit-ui?code=xxx&state=xxx)
-            let queryString = '';
-            if (data.url.includes('?')) {
-              queryString = data.url.substring(data.url.indexOf('?') + 1);
-            }
-            
-            if (queryString) {
-              // Extract state parameter to restore Keycloak callback storage
-              const urlParams = new URLSearchParams(queryString);
-              const state = urlParams.get('state');
+          if (isTokenExchangeInProgress && !hasExistingToken) {
+            console.log('[ANDROID-KEYCLOAK] Token exchange already in progress, waiting for completion before processing new deep link', {
+              deepLink: data.url,
+              currentUrl: window.location.href
+            });
+            // Wait for token exchange to complete (max 10 seconds)
+            let waitCount = 0;
+            const checkInterval = setInterval(() => {
+              waitCount++;
+              const stillProcessing = sessionStorage.getItem('keycloak_auth_processing') === 'true';
+              const tokenNow = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
               
-              // Try to restore cookies from sessionStorage if available
-              // This helps when Chrome cookies don't transfer to WebView
-              if (state) {
-                console.log('[ANDROID-KEYCLOAK] Attempting to restore OAuth state cookies', {
-                  state: state.substring(0, 20) + '...'
-                });
-                
-                // Check if we have state stored in sessionStorage (backup mechanism)
-                const storedState = sessionStorage.getItem(`kc-state-backup-${state}`);
-                if (storedState) {
-                  console.log('[ANDROID-KEYCLOAK] Found backup state in sessionStorage, restoring cookie');
-                  
-                  // Restore the cookie using document.cookie directly
-                  // This must happen BEFORE Keycloak processes the callback
-                  try {
-                    const expires = new Date(Date.now() + 60 * 60 * 1000).toUTCString(); // 1 hour
-                    document.cookie = `kc-callback-${state}=${storedState}; expires=${expires}; path=/`;
-                    console.log('[ANDROID-KEYCLOAK] Cookie restored via document.cookie successfully');
-                    
-                    // Also try CapacitorCookies as a backup
-                    CapacitorCookies.setCookie({
-                      url: 'http://localhost',
-                      key: `kc-callback-${state}`,
-                      value: storedState,
-                      expires: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-                      path: '/'
-                    }).then(() => {
-                      console.log('[ANDROID-KEYCLOAK] Cookie also set via CapacitorCookies');
-                    }).catch((error) => {
-                      console.warn('[ANDROID-KEYCLOAK] Failed to set cookie via CapacitorCookies (non-critical):', error);
-                    });
-                  } catch (e) {
-                    console.warn('[ANDROID-KEYCLOAK] Failed to restore cookie:', e);
-                  }
-                } else {
-                  console.log('[ANDROID-KEYCLOAK] No backup state found in sessionStorage - this may cause "No OAuth state found" error');
+              if (!stillProcessing || tokenNow || waitCount > 100) { // 10 seconds max wait
+                clearInterval(checkInterval);
+                if (tokenNow) {
+                  console.log('[ANDROID-KEYCLOAK] Token exchange completed, token found, ignoring duplicate deep link');
+                  this.processedDeepLinks.add(data.url);
+                } else if (waitCount > 100) {
+                  console.warn('[ANDROID-KEYCLOAK] Token exchange timeout, processing deep link anyway');
+                  // Continue with processing after timeout
+                  this.processDeepLinkCallback(data);
                 }
               }
-              
-              // Update window.location with query parameters to trigger Keycloak's callback handler
-              const newUrl = window.location.origin + window.location.pathname + '?' + queryString;
-              console.log('[ANDROID-KEYCLOAK] Converting deep link to window location:', {
-                deepLink: data.url,
-                newUrl: newUrl,
-                currentUrl: window.location.href
-              });
-              
-              // Only update if URL is different
-              if (window.location.href !== newUrl && !currentUrl.searchParams.has('code')) {
-                // Reset processing flag after navigation (will be set again on new page load)
-                setTimeout(() => {
-                  this.isProcessingDeepLink = false;
-                }, 1000);
-                window.location.href = newUrl;
-              } else {
-                console.log('[ANDROID-KEYCLOAK] URL already has code parameter or matches, skipping navigation');
-                this.isProcessingDeepLink = false;
-              }
-            } else {
-              console.warn('[ANDROID-KEYCLOAK] Deep link URL has no query parameters');
-              this.isProcessingDeepLink = false;
-            }
-          } else {
-            console.warn('[ANDROID-KEYCLOAK] Keycloak not initialized yet, storing URL for later processing');
-            // Store the URL to process after Keycloak is initialized
-            sessionStorage.setItem('pending_keycloak_callback', data.url);
-            this.isProcessingDeepLink = false;
+            }, 100);
+            return;
           }
+          
+          console.log('[ANDROID-KEYCLOAK] Keycloak callback detected, processing...', {
+            url: data.url,
+            hasKeycloakInstance: !!this.androidKeycloak,
+            isTokenExchangeInProgress: isTokenExchangeInProgress,
+            hasExistingToken: hasExistingToken
+          });
+          
+          // Process the deep link
+          this.processDeepLinkCallback(data);
         } else {
           console.log('[ANDROID-KEYCLOAK] Deep link is not a Keycloak callback, ignoring');
         }
@@ -291,6 +238,110 @@ export class AndroidKeycloakService {
       console.log('[ANDROID-KEYCLOAK] Global deep link listener registered');
     } else {
       console.warn('[ANDROID-KEYCLOAK] Capacitor not available, cannot register deep link listener');
+    }
+  }
+  
+  /**
+   * Process deep link callback - extracted to separate method for reuse
+   */
+  private processDeepLinkCallback(data: any) {
+    // Mark as processing to prevent concurrent handling
+    this.isProcessingDeepLink = true;
+    this.processedDeepLinks.add(data.url);
+    
+    // Prevent browser from handling the deep link by ensuring we process it
+    // If Keycloak is already initialized, update window location to trigger its callback handler
+    // This will cause processInit to parse the callback and processCallback to handle it
+    if (this.androidKeycloak) {
+      console.log('[ANDROID-KEYCLOAK] Keycloak initialized, updating window location to trigger callback handler');
+      
+      // Extract query parameters from deep link URL (android://mosip-compliance-toolkit-ui?code=xxx&state=xxx)
+      let queryString = '';
+      if (data.url.includes('?')) {
+        queryString = data.url.substring(data.url.indexOf('?') + 1);
+      }
+      
+      if (queryString) {
+        // Extract state parameter to restore Keycloak callback storage
+        const urlParams = new URLSearchParams(queryString);
+        const state = urlParams.get('state');
+        
+        // Try to restore cookies from sessionStorage if available
+        // This helps when Chrome cookies don't transfer to WebView
+        if (state) {
+          console.log('[ANDROID-KEYCLOAK] Attempting to restore OAuth state cookies', {
+            state: state.substring(0, 20) + '...'
+          });
+          
+          // Check if we have state stored in sessionStorage (backup mechanism)
+          const storedState = sessionStorage.getItem(`kc-state-backup-${state}`);
+          if (storedState) {
+            console.log('[ANDROID-KEYCLOAK] Found backup state in sessionStorage, restoring cookie');
+            
+            // Restore the cookie using document.cookie directly
+            // This must happen BEFORE Keycloak processes the callback
+            try {
+              const expires = new Date(Date.now() + 60 * 60 * 1000).toUTCString(); // 1 hour
+              document.cookie = `kc-callback-${state}=${storedState}; expires=${expires}; path=/`;
+              console.log('[ANDROID-KEYCLOAK] Cookie restored via document.cookie successfully');
+              
+              // Also try CapacitorCookies as a backup
+              CapacitorCookies.setCookie({
+                url: 'http://localhost',
+                key: `kc-callback-${state}`,
+                value: storedState,
+                expires: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                path: '/'
+              }).then(() => {
+                console.log('[ANDROID-KEYCLOAK] Cookie also set via CapacitorCookies');
+              }).catch((error) => {
+                console.warn('[ANDROID-KEYCLOAK] Failed to set cookie via CapacitorCookies (non-critical):', error);
+              });
+            } catch (e) {
+              console.warn('[ANDROID-KEYCLOAK] Failed to restore cookie:', e);
+            }
+          } else {
+            console.log('[ANDROID-KEYCLOAK] No backup state found in sessionStorage - this may cause "No OAuth state found" error');
+          }
+        }
+        
+        // Update window.location with query parameters to trigger Keycloak's callback handler
+        const currentUrl = new URL(window.location.href);
+        const newUrl = window.location.origin + window.location.pathname + '?' + queryString;
+        console.log('[ANDROID-KEYCLOAK] Converting deep link to window location:', {
+          deepLink: data.url,
+          newUrl: newUrl,
+          currentUrl: window.location.href
+        });
+        
+        // Only update if URL is different and doesn't already have code parameter
+        if (window.location.href !== newUrl && !currentUrl.searchParams.has('code')) {
+          // Use history.replaceState instead of href to avoid full page reload
+          // This prevents canceling ongoing XHR requests
+          console.log('[ANDROID-KEYCLOAK] Updating URL using history.replaceState to avoid canceling requests');
+          window.history.replaceState({}, document.title, newUrl);
+          
+          // Trigger Keycloak's callback handler manually by calling init again
+          // But first, check if we should wait a bit for any ongoing requests
+          setTimeout(() => {
+            // Keycloak should detect the URL change and process the callback
+            // If it doesn't, we'll let the normal init flow handle it
+            console.log('[ANDROID-KEYCLOAK] URL updated, Keycloak should process callback');
+            this.isProcessingDeepLink = false;
+          }, 500);
+        } else {
+          console.log('[ANDROID-KEYCLOAK] URL already has code parameter or matches, skipping navigation');
+          this.isProcessingDeepLink = false;
+        }
+      } else {
+        console.warn('[ANDROID-KEYCLOAK] Deep link URL has no query parameters');
+        this.isProcessingDeepLink = false;
+      }
+    } else {
+      console.warn('[ANDROID-KEYCLOAK] Keycloak not initialized yet, storing URL for later processing');
+      // Store the URL to process after Keycloak is initialized
+      sessionStorage.setItem('pending_keycloak_callback', data.url);
+      this.isProcessingDeepLink = false;
     }
   }
 
