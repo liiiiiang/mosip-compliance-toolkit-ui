@@ -10,11 +10,91 @@ export class AndroidKeycloakService {
 
   private androidKeycloak: Keycloak.KeycloakInstance;
 
+  private urlListener: any = null;
+
   constructor(
   ) {
     const isAndroidAppMode = environment.isAndroidAppMode == 'yes' ? true : false;
     if (isAndroidAppMode) {
+      // Register global deep link listener BEFORE setUp to catch redirects immediately
+      // This is critical to prevent browser from handling the deep link
+      this.registerGlobalDeepLinkListener();
       this.setUp();
+    }
+  }
+
+  /**
+   * Register a global deep link listener to catch Keycloak redirects
+   * This must be registered before Keycloak init to ensure we catch the redirect
+   * and prevent browser from handling it (which causes infinite loop)
+   */
+  private registerGlobalDeepLinkListener() {
+    // Check if Capacitor is available
+    if (typeof window !== 'undefined' && (window as any).Capacitor && (window as any).Capacitor.Plugins) {
+      // Remove existing listener if any
+      if (this.urlListener) {
+        this.urlListener.remove();
+      }
+
+      // Register global listener for deep links
+      this.urlListener = (window as any).Capacitor.Plugins.App.addListener('appUrlOpen', (data: any) => {
+        console.log('[ANDROID-KEYCLOAK] Deep link received:', {
+          url: data.url,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Check if this is a Keycloak callback (contains code parameter or our redirect URI)
+        if (data.url && (data.url.includes('code=') || data.url.includes('android://mosip-compliance-toolkit-ui'))) {
+          console.log('[ANDROID-KEYCLOAK] Keycloak callback detected, processing...', {
+            url: data.url,
+            hasKeycloakInstance: !!this.androidKeycloak
+          });
+          
+          // Prevent browser from handling the deep link by ensuring we process it
+          // If Keycloak is already initialized, update window location to trigger its callback handler
+          // This will cause processInit to parse the callback and processCallback to handle it
+          if (this.androidKeycloak) {
+            console.log('[ANDROID-KEYCLOAK] Keycloak initialized, updating window location to trigger callback handler');
+            
+            // Extract query parameters from deep link URL (android://mosip-compliance-toolkit-ui?code=xxx&state=xxx)
+            let queryString = '';
+            if (data.url.includes('?')) {
+              queryString = data.url.substring(data.url.indexOf('?') + 1);
+            }
+            
+            if (queryString) {
+              // Update window.location with query parameters to trigger Keycloak's callback handler
+              const newUrl = window.location.origin + window.location.pathname + '?' + queryString;
+              console.log('[ANDROID-KEYCLOAK] Converting deep link to window location:', {
+                deepLink: data.url,
+                newUrl: newUrl,
+                currentUrl: window.location.href
+              });
+              
+              // Only update if URL is different
+              if (window.location.href !== newUrl) {
+                window.location.href = newUrl;
+              } else {
+                console.log('[ANDROID-KEYCLOAK] URL already matches, triggering Keycloak processing');
+                // Force Keycloak to re-process by dispatching a popstate event
+                window.dispatchEvent(new PopStateEvent('popstate'));
+              }
+            } else {
+              console.warn('[ANDROID-KEYCLOAK] Deep link URL has no query parameters');
+            }
+          } else {
+            console.warn('[ANDROID-KEYCLOAK] Keycloak not initialized yet, storing URL for later processing');
+            // Store the URL to process after Keycloak is initialized
+            sessionStorage.setItem('pending_keycloak_callback', data.url);
+          }
+        } else {
+          console.log('[ANDROID-KEYCLOAK] Deep link is not a Keycloak callback, ignoring');
+        }
+      });
+
+      console.log('[ANDROID-KEYCLOAK] Global deep link listener registered');
+    } else {
+      console.warn('[ANDROID-KEYCLOAK] Capacitor not available, cannot register deep link listener');
     }
   }
 
@@ -30,6 +110,29 @@ export class AndroidKeycloakService {
     if (this.androidKeycloak) {
       console.log('[ANDROID-KEYCLOAK DEBUG] Instance already exists, skipping setup');
       return;
+    }
+    
+    // Check for pending callback from deep link listener (before Keycloak init)
+    const pendingCallback = sessionStorage.getItem('pending_keycloak_callback');
+    if (pendingCallback) {
+      console.log('[ANDROID-KEYCLOAK DEBUG] Found pending callback from deep link listener:', pendingCallback);
+      sessionStorage.removeItem('pending_keycloak_callback');
+      
+      // Extract query parameters from deep link URL
+      let queryString = '';
+      if (pendingCallback.includes('?')) {
+        queryString = pendingCallback.substring(pendingCallback.indexOf('?') + 1);
+      }
+      
+      if (queryString) {
+        // Process the callback after Keycloak is initialized
+        // Use a longer delay to ensure Keycloak is fully ready
+        setTimeout(() => {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Processing pending callback');
+          const callbackUrl = window.location.origin + window.location.pathname + '?' + queryString;
+          window.location.href = callbackUrl;
+        }, 500);
+      }
     }
     
     // Check if we're in the middle of processing (after reload)
