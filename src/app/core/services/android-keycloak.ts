@@ -164,6 +164,27 @@ export class AndroidKeycloakService {
         
         // Check if this is a Keycloak callback (contains code parameter or our redirect URI)
         if (data.url && (data.url.includes('code=') || data.url.includes('android://mosip-compliance-toolkit-ui'))) {
+          // CRITICAL FIX: Check if this is an error callback
+          if (data.url.includes('error=login_required')) {
+            console.log('[OIDC-FLOW-DEBUG] ========== Keycloak returned error=login_required ==========');
+            console.log('[OIDC-FLOW-DEBUG] This is usually from SSO check with prompt=none');
+            console.log('[OIDC-FLOW-DEBUG] Ignoring this error - will use stored token if available');
+            
+            // Mark as processed to prevent retry
+            this.processedDeepLinks.add(data.url);
+            
+            // Check if we have a token
+            const hasToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
+            if (hasToken) {
+              console.log('[OIDC-FLOW-DEBUG] Token exists, ignoring login_required error');
+              return;
+            } else {
+              console.log('[OIDC-FLOW-DEBUG] No token exists, may need to login manually');
+              // Don't automatically trigger login - let user initiate it
+              return;
+            }
+          }
+          
           console.log('[OIDC-FLOW-DEBUG] This IS a Keycloak callback (has code parameter)');
           // Prevent duplicate processing
           if (this.processedDeepLinks.has(data.url)) {
@@ -428,6 +449,17 @@ export class AndroidKeycloakService {
       hasHash: !!window.location.hash
     });
     
+    // CRITICAL FIX: Check if already authenticated before creating new instance
+    const isAuthenticated = sessionStorage.getItem('keycloak_authenticated') === 'true';
+    const hasStoredToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
+    
+    if (isAuthenticated && hasStoredToken) {
+      console.log('[OIDC-FLOW-DEBUG] ========== Already Authenticated ==========');
+      console.log('[OIDC-FLOW-DEBUG] Skipping Keycloak setup - user is already logged in');
+      console.log('[OIDC-FLOW-DEBUG] Token exists in localStorage');
+      return;
+    }
+    
     // Prevent duplicate setup
     if (this.androidKeycloak) {
       console.log('[ANDROID-KEYCLOAK DEBUG] Instance already exists, skipping setup');
@@ -441,9 +473,9 @@ export class AndroidKeycloakService {
     // Clear processed deep links on page reload (but keep them during the same session)
     // This allows retry after a failed attempt, but prevents infinite loops
     // Only clear if we have a token or if we're not in the middle of processing
-    const hasToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
+    const hasExistingToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
     const isProcessingFlag = sessionStorage.getItem('keycloak_auth_processing');
-    if (hasToken && !isProcessingFlag) {
+    if (hasExistingToken && !isProcessingFlag) {
       console.log('[ANDROID-KEYCLOAK DEBUG] Clearing processed deep links after successful auth');
       this.processedDeepLinks.clear();
     }
@@ -577,10 +609,11 @@ export class AndroidKeycloakService {
         
         console.log('[ANDROID-KEYCLOAK DEBUG] Token saved successfully');
         
-        // Mark that we're processing to prevent duplicate calls
+        // CRITICAL FIX: Mark that authentication is complete and successful
+        // This prevents creating new Keycloak instances after reload
         sessionStorage.setItem('keycloak_auth_processing', 'true');
-        // Mark that we successfully authenticated to prevent re-login after reload
         sessionStorage.setItem('keycloak_auth_success', 'true');
+        sessionStorage.setItem('keycloak_authenticated', 'true'); // NEW: Prevent new instances
         isReloading = true;
         
         // Clear processing flags
@@ -596,21 +629,16 @@ export class AndroidKeycloakService {
         });
         window.history.replaceState({}, document.title, cleanUrl);
         
-        // Force clear any remaining query params by navigating to clean URL
-        // Use a longer timeout to ensure URL is fully cleared
+        // DO NOT RELOAD! Just clear the URL and let the app continue
+        // Reloading causes a new Keycloak instance to be created
+        console.log('[OIDC-FLOW-DEBUG] ========== Token saved, URL cleaned, auth complete ==========');
+        console.log('[OIDC-FLOW-DEBUG] NOT reloading page to prevent creating new Keycloak instance');
+        
+        // Clear processing flags after a delay
         setTimeout(() => {
-          // Double-check URL is clean
-          if (window.location.search || window.location.hash) {
-            console.log('[ANDROID-KEYCLOAK DEBUG] URL still has params, cleaning again', {
-              search: window.location.search,
-              hash: window.location.hash
-            });
-            window.history.replaceState({}, document.title, cleanUrl);
-          }
-          console.log('[ANDROID-KEYCLOAK DEBUG] Reloading page');
-          // Keep the flag during reload - it will be cleared after init checks
-          window.location.reload();
-        }, 200);
+          sessionStorage.removeItem('keycloak_auth_processing');
+          console.log('[OIDC-FLOW-DEBUG] Auth processing complete, app should now work normally');
+        }, 1000);
       } else {
         console.warn('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called but no access token');
         // Reset processing flag if no token
