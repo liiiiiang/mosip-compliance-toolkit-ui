@@ -18,6 +18,10 @@ export class AndroidKeycloakService {
   
   // Flag to prevent concurrent deep link processing
   private isProcessingDeepLink: boolean = false;
+  
+  // Flag to prevent repeated login attempts
+  private isLoginInProgress: boolean = false;
+  private lastLoginAttemptTime: number = 0;
 
   constructor(
   ) {
@@ -27,7 +31,110 @@ export class AndroidKeycloakService {
       // This is critical to prevent browser from handling the deep link
       this.registerGlobalDeepLinkListener();
       this.setUp();
+      
+      // Intercept XMLHttpRequest to log all network requests (for debugging)
+      this.setupNetworkInterceptor();
     }
+  }
+  
+  /**
+   * Intercept XMLHttpRequest to log network requests for debugging
+   */
+  private setupNetworkInterceptor() {
+    if (typeof XMLHttpRequest === 'undefined') {
+      return;
+    }
+    
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    
+    XMLHttpRequest.prototype.open = function(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null) {
+      const requestUrl = url.toString();
+      const xhr = this as any;
+      xhr._requestMethod = method;
+      xhr._requestUrl = requestUrl;
+      xhr._requestTimestamp = Date.now();
+      
+      // Log Keycloak token exchange requests
+      if (requestUrl.includes('/protocol/openid-connect/token')) {
+        console.log('[NETWORK DEBUG] Token exchange request initiated', {
+          method: method,
+          url: requestUrl,
+          timestamp: new Date().toISOString()
+        });
+        
+        // Add error listeners
+        this.addEventListener('error', function(event: any) {
+          console.error('[NETWORK DEBUG] Token exchange request error event', {
+            type: event.type,
+            url: requestUrl,
+            readyState: this.readyState,
+            status: this.status,
+            statusText: this.statusText,
+            timestamp: new Date().toISOString()
+          });
+        });
+        
+        this.addEventListener('timeout', function(event: any) {
+          console.error('[NETWORK DEBUG] Token exchange request timeout event', {
+            type: event.type,
+            url: requestUrl,
+            timestamp: new Date().toISOString()
+          });
+        });
+        
+        this.addEventListener('abort', function(event: any) {
+          console.error('[NETWORK DEBUG] Token exchange request abort event', {
+            type: event.type,
+            url: requestUrl,
+            timestamp: new Date().toISOString()
+          });
+        });
+      }
+      
+      return originalOpen.call(this, method, url, async !== undefined ? async : true, username, password);
+    };
+    
+    XMLHttpRequest.prototype.send = function(body?: Document | XMLHttpRequestBodyInit | null) {
+      const xhr = this as any;
+      const requestUrl = xhr._requestUrl;
+      const requestMethod = xhr._requestMethod;
+      
+      if (requestUrl && requestUrl.includes('/protocol/openid-connect/token')) {
+        const bodyStr = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : '';
+        console.log('[NETWORK DEBUG] Token exchange request sent', {
+          method: requestMethod,
+          url: requestUrl,
+          bodyLength: bodyStr.length,
+          bodyPreview: bodyStr.substring(0, 200),
+          timestamp: new Date().toISOString()
+        });
+        
+        // Monitor response
+        const originalOnReadyStateChange = this.onreadystatechange;
+        const self = this;
+        this.onreadystatechange = function(event: Event) {
+          if (self.readyState === 4) {
+            console.log('[NETWORK DEBUG] Token exchange response received', {
+              status: self.status,
+              statusText: self.statusText,
+              responseLength: self.responseText ? self.responseText.length : 0,
+              responsePreview: self.responseText ? self.responseText.substring(0, 500) : 'no response',
+              responseHeaders: self.getAllResponseHeaders ? self.getAllResponseHeaders() : 'not available',
+              url: requestUrl,
+              timestamp: new Date().toISOString()
+            });
+          }
+          if (originalOnReadyStateChange) {
+            return originalOnReadyStateChange.call(self, event);
+          }
+        };
+      }
+      
+      return originalSend.call(this, body);
+    };
+    
+    console.log('[ANDROID-KEYCLOAK] Network interceptor enabled for debugging');
   }
 
   /**
@@ -392,8 +499,9 @@ export class AndroidKeycloakService {
         sessionStorage.setItem('keycloak_auth_success', 'true');
         isReloading = true;
         
-        // Clear processing flag
+        // Clear processing flags
         this.isProcessingDeepLink = false;
+        this.isLoginInProgress = false; // Reset login flag on success
         
         // Clear ALL URL parameters and fragments before reloading
         // This prevents the second CODE_TO_TOKEN attempt with an already-used authorization code
@@ -430,16 +538,56 @@ export class AndroidKeycloakService {
     this.androidKeycloak.onAuthError = (errorData: any) => {
       console.error('[ANDROID-KEYCLOAK DEBUG] onAuthError called', {
         error: errorData,
-        url: window.location.href
+        errorType: errorData?.error || 'unknown',
+        errorDescription: errorData?.error_description || 'no description',
+        status: errorData?.status,
+        statusText: errorData?.statusText,
+        url: window.location.href,
+        hasCode: window.location.search.includes('code='),
+        hasState: window.location.search.includes('state='),
+        timestamp: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        cookies: document.cookie,
+        sessionStorage: {
+          authFailed: sessionStorage.getItem('keycloak_auth_failed'),
+          authFailedTime: sessionStorage.getItem('keycloak_auth_failed_time'),
+          authProcessing: sessionStorage.getItem('keycloak_auth_processing'),
+          authSuccess: sessionStorage.getItem('keycloak_auth_success')
+        }
       });
       
+      // Log detailed error information for debugging
+      if (errorData?.error === 'network_error' || errorData?.error === 'timeout' || errorData?.error === 'aborted') {
+        console.error('[ANDROID-KEYCLOAK DEBUG] Network-level error detected', {
+          error: errorData.error,
+          description: errorData.error_description,
+          suggestion: 'Check network connectivity, CORS configuration, and Keycloak server availability'
+        });
+      } else if (errorData?.status === 400 || errorData?.status === 401 || errorData?.status === 403) {
+        console.error('[ANDROID-KEYCLOAK DEBUG] HTTP error response from Keycloak', {
+          status: errorData.status,
+          error: errorData.error,
+          description: errorData.error_description,
+          suggestion: 'Check redirect_uri, client_id, and authorization code validity'
+        });
+      }
+      
       // Mark that auth failed to prevent immediate re-login attempts
+      // Use 30 second cooldown to prevent rapid retries
       sessionStorage.setItem('keycloak_auth_failed', 'true');
       sessionStorage.setItem('keycloak_auth_failed_time', Date.now().toString());
+      sessionStorage.setItem('keycloak_auth_error_details', JSON.stringify({
+        error: errorData?.error || 'unknown',
+        error_description: errorData?.error_description || 'no description',
+        status: errorData?.status,
+        timestamp: Date.now()
+      }));
       
-      // Don't automatically retry - let user try again manually
-      // Reset processing flag
+      // Reset login progress flags
+      this.isLoginInProgress = false;
       this.isProcessingDeepLink = false;
+      
+      console.log('[ANDROID-KEYCLOAK DEBUG] Auth error - will wait 30 seconds before allowing retry');
     };
     
     // Handle token expiration
@@ -463,24 +611,40 @@ export class AndroidKeycloakService {
     const authFailed = sessionStorage.getItem('keycloak_auth_failed');
     const authFailedTime = authFailed ? parseInt(sessionStorage.getItem('keycloak_auth_failed_time') || '0') : 0;
     
-    // If auth recently failed (within last 5 seconds), don't immediately retry
-    const recentlyFailed = authFailed && (Date.now() - authFailedTime < 5000);
+    // If auth recently failed (within last 30 seconds), don't immediately retry
+    // Also check if login is already in progress
+    const recentlyFailed = authFailed && (Date.now() - authFailedTime < 30000);
+    const loginInProgress = this.isLoginInProgress || (Date.now() - this.lastLoginAttemptTime < 5000);
     
     // Determine onLoad behavior:
-    // - If URL has code parameter, we're in callback - don't trigger login (use check-sso)
-    // - If auth just succeeded, use check-sso to verify without triggering login
-    // - If auth recently failed, use check-sso to avoid immediate retry
-    // - If no token and no code and no recent failure, trigger login
+    // - Always use check-sso to prevent automatic login
+    // - We'll manually trigger login only if needed and safe to do so
+    // - This prevents Keycloak adapter from automatically opening browser
     let onLoad: 'check-sso' | 'login-required' = 'check-sso';
-    if (hasCodeInUrl) {
-      onLoad = 'check-sso'; // Don't trigger login during callback
-    } else if (authSuccess) {
-      onLoad = 'check-sso'; // Don't trigger login if we just succeeded
-    } else if (recentlyFailed) {
-      onLoad = 'check-sso'; // Don't retry immediately after failure
-      console.log('[ANDROID-KEYCLOAK DEBUG] Auth recently failed, using check-sso to avoid immediate retry');
-    } else if (!existingToken) {
-      onLoad = 'login-required'; // Trigger login if no token
+    
+    // Only use login-required if:
+    // 1. No code in URL (not processing callback)
+    // 2. No token exists
+    // 3. Auth didn't recently fail
+    // 4. Login is not already in progress
+    // 5. Auth didn't just succeed
+    if (!hasCodeInUrl && !existingToken && !recentlyFailed && !loginInProgress && !authSuccess) {
+      // Still use check-sso, we'll manually trigger login after init if needed
+      onLoad = 'check-sso';
+      console.log('[ANDROID-KEYCLOAK DEBUG] Will check if login needed after init');
+    } else {
+      onLoad = 'check-sso';
+      if (hasCodeInUrl) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Using check-sso - processing callback');
+      } else if (authSuccess) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Using check-sso - auth just succeeded');
+      } else if (recentlyFailed) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Using check-sso - auth recently failed (waiting 30s)');
+      } else if (loginInProgress) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Using check-sso - login already in progress');
+      } else if (existingToken) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Using check-sso - token exists');
+      }
     }
     
     console.log('[ANDROID-KEYCLOAK DEBUG] Keycloak init options', {
@@ -514,6 +678,9 @@ export class AndroidKeycloakService {
       if (authenticated && this.androidKeycloak.token) {
         sessionStorage.removeItem('keycloak_auth_failed');
         sessionStorage.removeItem('keycloak_auth_failed_time');
+        // Reset login progress flags on success
+        this.isLoginInProgress = false;
+        this.lastLoginAttemptTime = 0;
       }
       
       // Clear auth success flag after checking (it was just used to prevent re-login)
@@ -526,21 +693,39 @@ export class AndroidKeycloakService {
       // 2. No code in URL (not in callback)
       // 3. No token
       // 4. Auth didn't recently fail
-      if (!authenticated && !hasCodeInUrl && !this.androidKeycloak.token && !recentlyFailed && !existingToken) {
+      // 5. Login is not already in progress
+      // 6. Auth didn't just succeed
+      if (!authenticated && !hasCodeInUrl && !this.androidKeycloak.token && !recentlyFailed && !existingToken && !loginInProgress && !authSuccess) {
         console.log('[ANDROID-KEYCLOAK DEBUG] Not authenticated and conditions met, triggering login');
-        this.androidKeycloak.login();
-      } else if (recentlyFailed) {
-        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login due to recent auth failure');
-      } else if (hasCodeInUrl) {
-        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - processing callback');
-      } else if (existingToken || this.androidKeycloak.token) {
-        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - token exists');
+        this.isLoginInProgress = true;
+        this.lastLoginAttemptTime = Date.now();
+        this.androidKeycloak.login().catch((error) => {
+          console.error('[ANDROID-KEYCLOAK DEBUG] Login error:', error);
+          this.isLoginInProgress = false;
+          // Mark auth as failed to prevent immediate retry
+          sessionStorage.setItem('keycloak_auth_failed', 'true');
+          sessionStorage.setItem('keycloak_auth_failed_time', Date.now().toString());
+        });
+      } else {
+        if (recentlyFailed) {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login due to recent auth failure (waiting 30s)');
+        } else if (loginInProgress) {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - login already in progress');
+        } else if (hasCodeInUrl) {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - processing callback');
+        } else if (existingToken || this.androidKeycloak.token) {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - token exists');
+        } else if (authSuccess) {
+          console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - auth just succeeded');
+        }
       }
     }).catch((error) => {
       console.error('[ANDROID-KEYCLOAK DEBUG] Keycloak init error:', error);
       // Mark auth as failed to prevent immediate retry
       sessionStorage.setItem('keycloak_auth_failed', 'true');
       sessionStorage.setItem('keycloak_auth_failed_time', Date.now().toString());
+      // Reset login progress flags
+      this.isLoginInProgress = false;
     });
   }
   getInstance() {

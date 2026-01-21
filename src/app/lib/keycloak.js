@@ -878,7 +878,68 @@
                     params += '&code_verifier=' + oauth.pkceCodeVerifier;
                 }
 
+                // Log request parameters (without sensitive data)
+                console.log('[KEYCLOAK DEBUG] Token exchange request parameters', {
+                    url: url,
+                    clientId: kc.clientId,
+                    redirectUri: kc.redirectUri,
+                    hasCode: !!code,
+                    codeLength: code ? code.length : 0,
+                    hasPkceCodeVerifier: !!oauth.pkceCodeVerifier,
+                    paramsLength: params.length,
+                    timestamp: new Date().toISOString()
+                });
+
                 req.withCredentials = true;
+
+                // Add error handlers to catch network errors
+                req.onerror = function(event) {
+                    console.error('[KEYCLOAK DEBUG] Token exchange request network error', {
+                        type: 'network_error',
+                        code: code ? code.substring(0, 20) + '...' : 'no code',
+                        url: url,
+                        readyState: req.readyState,
+                        status: req.status,
+                        statusText: req.statusText,
+                        timestamp: new Date().toISOString(),
+                        error: event ? event.toString() : 'unknown error'
+                    });
+                    kc.onAuthError && kc.onAuthError({
+                        error: 'network_error',
+                        error_description: 'Network error during token exchange: ' + (event ? event.toString() : 'unknown')
+                    });
+                    promise && promise.setError();
+                };
+
+                req.ontimeout = function(event) {
+                    console.error('[KEYCLOAK DEBUG] Token exchange request timeout', {
+                        type: 'timeout',
+                        code: code ? code.substring(0, 20) + '...' : 'no code',
+                        url: url,
+                        readyState: req.readyState,
+                        timestamp: new Date().toISOString()
+                    });
+                    kc.onAuthError && kc.onAuthError({
+                        error: 'timeout',
+                        error_description: 'Request timeout during token exchange'
+                    });
+                    promise && promise.setError();
+                };
+
+                req.onabort = function(event) {
+                    console.error('[KEYCLOAK DEBUG] Token exchange request aborted', {
+                        type: 'aborted',
+                        code: code ? code.substring(0, 20) + '...' : 'no code',
+                        url: url,
+                        readyState: req.readyState,
+                        timestamp: new Date().toISOString()
+                    });
+                    kc.onAuthError && kc.onAuthError({
+                        error: 'aborted',
+                        error_description: 'Request aborted during token exchange'
+                    });
+                    promise && promise.setError();
+                };
 
                 req.onreadystatechange = function() {
                     if (req.readyState == 1) {
@@ -890,7 +951,10 @@
                     if (req.readyState == 2) {
                         console.log('[KEYCLOAK DEBUG] Token exchange request headers received', {
                             status: req.status,
-                            code: code.substring(0, 20) + '...'
+                            statusText: req.statusText,
+                            code: code.substring(0, 20) + '...',
+                            responseHeaders: req.getAllResponseHeaders ? req.getAllResponseHeaders() : 'not available',
+                            timestamp: new Date().toISOString()
                         });
                     }
                     if (req.readyState == 3) {
@@ -918,14 +982,38 @@
                             authSuccess(tokenResponse['access_token'], tokenResponse['refresh_token'], tokenResponse['id_token'], kc.flow === 'standard');
                             scheduleCheckIframe();
                         } else {
+                            // Try to parse error response
+                            var errorResponse = null;
+                            try {
+                                if (req.responseText) {
+                                    errorResponse = JSON.parse(req.responseText);
+                                }
+                            } catch (e) {
+                                // Not JSON, use raw text
+                            }
+                            
                             console.error('[KEYCLOAK DEBUG] Token exchange failed', {
                                 status: req.status,
                                 statusText: req.statusText,
-                                response: req.responseText ? req.responseText.substring(0, 200) : 'no response',
+                                response: req.responseText ? req.responseText.substring(0, 500) : 'no response',
+                                errorResponse: errorResponse,
                                 code: code.substring(0, 20) + '...',
+                                url: url,
+                                redirectUri: kc.redirectUri,
+                                clientId: kc.clientId,
+                                responseHeaders: req.getAllResponseHeaders ? req.getAllResponseHeaders() : 'not available',
                                 timestamp: new Date().toISOString()
                             });
-                            kc.onAuthError && kc.onAuthError();
+                            
+                            // Pass error details to onAuthError
+                            var errorData = {
+                                error: errorResponse ? (errorResponse.error || 'token_exchange_failed') : 'token_exchange_failed',
+                                error_description: errorResponse ? (errorResponse.error_description || req.responseText) : req.responseText || req.statusText,
+                                status: req.status,
+                                statusText: req.statusText
+                            };
+                            
+                            kc.onAuthError && kc.onAuthError(errorData);
                             promise && promise.setError();
                         }
                     }
