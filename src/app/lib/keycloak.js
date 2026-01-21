@@ -408,6 +408,12 @@
         }
 
         kc.login = function (options) {
+            console.log('[OIDC-FLOW-DEBUG] ========== kc.login() CALLED ==========');
+            console.log('[OIDC-FLOW-DEBUG] This will trigger browser to open for authentication');
+            console.log('[OIDC-FLOW-DEBUG] Options:', options);
+            console.log('[OIDC-FLOW-DEBUG] Current URL:', window.location.href);
+            console.log('[OIDC-FLOW-DEBUG] Call Stack:', new Error().stack);
+            console.log('[OIDC-FLOW-DEBUG] ================================================');
             return adapter.login(options);
         }
 
@@ -490,6 +496,14 @@
                 scope = "openid " + scope;
             }
 
+            console.log('[OIDC-FLOW-DEBUG] ========== Building Authorization URL ==========');
+            console.log('[OIDC-FLOW-DEBUG] About to redirect to Keycloak for login');
+            console.log('[OIDC-FLOW-DEBUG] Base URL:', baseUrl);
+            console.log('[OIDC-FLOW-DEBUG] Client ID:', kc.clientId);
+            console.log('[OIDC-FLOW-DEBUG] Redirect URI:', redirectUri);
+            console.log('[OIDC-FLOW-DEBUG] State:', state);
+            console.log('[OIDC-FLOW-DEBUG] Call Stack:', new Error().stack);
+            
             var url = baseUrl
                 + '?client_id=' + encodeURIComponent(kc.clientId)
                 + '&redirect_uri=' + encodeURIComponent(redirectUri)
@@ -859,6 +873,11 @@
             }
 
             if ((kc.flow != 'implicit') && code) {
+                console.log('[OIDC-FLOW-DEBUG] ========== Token Exchange Starting ==========');
+                console.log('[OIDC-FLOW-DEBUG] Authorization Code received (first 30 chars):', code.substring(0, 30) + '...');
+                console.log('[OIDC-FLOW-DEBUG] Token URL:', kc.endpoints.token());
+                console.log('[OIDC-FLOW-DEBUG] Current timestamp:', new Date().toISOString());
+                console.log('[OIDC-FLOW-DEBUG] Current window URL:', window.location.href);
                 console.log('[KEYCLOAK DEBUG] Starting token exchange request', {
                     code: code.substring(0, 20) + '...',
                     tokenUrl: kc.endpoints.token()
@@ -973,6 +992,10 @@
                         
                         // CRITICAL FIX: Handle canceled requests (status 0 usually means request was canceled)
                         if (req.status == 0) {
+                            console.error('[OIDC-FLOW-DEBUG] ========== Token Exchange CANCELED ==========');
+                            console.error('[OIDC-FLOW-DEBUG] XHR request status is 0 - REQUEST WAS CANCELED');
+                            console.error('[OIDC-FLOW-DEBUG] This usually means page navigation happened while request was in flight');
+                            console.error('[OIDC-FLOW-DEBUG] This is the ROOT CAUSE of the infinite loop!');
                             console.error('[KEYCLOAK DEBUG] Token exchange request was canceled (status 0)', {
                                 code: code.substring(0, 20) + '...',
                                 url: url,
@@ -1004,7 +1027,13 @@
                         }
                         
                         if (req.status == 200) {
+                            console.log('[OIDC-FLOW-DEBUG] ========== Token Exchange SUCCESS ==========');
+                            console.log('[OIDC-FLOW-DEBUG] Received tokens from Keycloak server');
                             var tokenResponse = JSON.parse(req.responseText);
+                            console.log('[OIDC-FLOW-DEBUG] Access Token (first 50 chars):', tokenResponse['access_token'] ? tokenResponse['access_token'].substring(0, 50) + '...' : 'NONE');
+                            console.log('[OIDC-FLOW-DEBUG] Has Refresh Token:', !!tokenResponse['refresh_token']);
+                            console.log('[OIDC-FLOW-DEBUG] Has ID Token:', !!tokenResponse['id_token']);
+                            console.log('[OIDC-FLOW-DEBUG] About to call authSuccess() which will trigger onAuthSuccess callback');
                             console.log('[KEYCLOAK DEBUG] Token exchange successful', {
                                 hasAccessToken: !!tokenResponse['access_token'],
                                 hasRefreshToken: !!tokenResponse['refresh_token'],
@@ -1050,6 +1079,9 @@
                         }
                     }
                 };
+                console.log('[OIDC-FLOW-DEBUG] ========== Sending Token Exchange Request ==========');
+                console.log('[OIDC-FLOW-DEBUG] XHR request about to be sent via req.send()');
+                console.log('[OIDC-FLOW-DEBUG] If this request gets CANCELED, it means page navigation happened');
                 console.log('[KEYCLOAK DEBUG] Sending token exchange request', {
                     code: code.substring(0, 20) + '...',
                     url: url,

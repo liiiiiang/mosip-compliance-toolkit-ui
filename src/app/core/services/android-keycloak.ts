@@ -152,6 +152,9 @@ export class AndroidKeycloakService {
 
       // Register global listener for deep links
       this.urlListener = (window as any).Capacitor.Plugins.App.addListener('appUrlOpen', (data: any) => {
+        console.log('[OIDC-FLOW-DEBUG] ========== Deep Link Received ==========');
+        console.log('[OIDC-FLOW-DEBUG] This is the callback from Keycloak after user login');
+        console.log('[OIDC-FLOW-DEBUG] Deep Link URL:', data.url);
         console.log('[ANDROID-KEYCLOAK] Deep link received:', {
           url: data.url,
           timestamp: new Date().toISOString(),
@@ -161,8 +164,10 @@ export class AndroidKeycloakService {
         
         // Check if this is a Keycloak callback (contains code parameter or our redirect URI)
         if (data.url && (data.url.includes('code=') || data.url.includes('android://mosip-compliance-toolkit-ui'))) {
+          console.log('[OIDC-FLOW-DEBUG] This IS a Keycloak callback (has code parameter)');
           // Prevent duplicate processing
           if (this.processedDeepLinks.has(data.url)) {
+            console.log('[OIDC-FLOW-DEBUG] Deep link already processed, IGNORING duplicate');
             console.log('[ANDROID-KEYCLOAK] Deep link already processed, ignoring duplicate', {
               url: data.url
             });
@@ -194,7 +199,14 @@ export class AndroidKeycloakService {
           const isTokenExchangeInProgress = sessionStorage.getItem('keycloak_auth_processing') === 'true';
           const hasExistingToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
           
+          console.log('[OIDC-FLOW-DEBUG] Token exchange status check:', {
+            isTokenExchangeInProgress: isTokenExchangeInProgress,
+            hasExistingToken: hasExistingToken
+          });
+          
           if (isTokenExchangeInProgress && !hasExistingToken) {
+            console.log('[OIDC-FLOW-DEBUG] ========== WAITING for token exchange ==========');
+            console.log('[OIDC-FLOW-DEBUG] Another token exchange is in progress, will wait for it to complete');
             console.log('[ANDROID-KEYCLOAK] Token exchange already in progress, waiting for completion before processing new deep link', {
               deepLink: data.url,
               currentUrl: window.location.href
@@ -316,10 +328,18 @@ export class AndroidKeycloakService {
         
         // Only update if URL is different and doesn't already have code parameter
         if (window.location.href !== newUrl && !currentUrl.searchParams.has('code')) {
+          console.log('[OIDC-FLOW-DEBUG] ========== Updating URL with authorization code ==========');
+          console.log('[OIDC-FLOW-DEBUG] Using history.replaceState (NOT window.location.href)');
+          console.log('[OIDC-FLOW-DEBUG] This should NOT cancel ongoing XHR requests');
+          console.log('[OIDC-FLOW-DEBUG] From:', window.location.href);
+          console.log('[OIDC-FLOW-DEBUG] To:', newUrl);
+          
           // Use history.replaceState instead of href to avoid full page reload
           // This prevents canceling ongoing XHR requests
           console.log('[ANDROID-KEYCLOAK] Updating URL using history.replaceState to avoid canceling requests');
           window.history.replaceState({}, document.title, newUrl);
+          
+          console.log('[OIDC-FLOW-DEBUG] URL updated. Keycloak init should now detect the code parameter and exchange it for token');
           
           // Trigger Keycloak's callback handler manually by calling init again
           // But first, check if we should wait a bit for any ongoing requests
@@ -330,6 +350,7 @@ export class AndroidKeycloakService {
             this.isProcessingDeepLink = false;
           }, 500);
         } else {
+          console.log('[OIDC-FLOW-DEBUG] URL already has code or matches, skipping update');
           console.log('[ANDROID-KEYCLOAK] URL already has code parameter or matches, skipping navigation');
           this.isProcessingDeepLink = false;
         }
@@ -502,8 +523,20 @@ export class AndroidKeycloakService {
       url: environment.IAM_URL,
     });
     
+    // Add comprehensive debugging for OIDC flow
+    console.log('[OIDC-FLOW-DEBUG] ========== Keycloak Instance Created ==========');
+    console.log('[OIDC-FLOW-DEBUG] Client ID:', environment.IAM_CLIENT_ID);
+    console.log('[OIDC-FLOW-DEBUG] Realm:', environment.IAM_REALM);
+    console.log('[OIDC-FLOW-DEBUG] URL:', environment.IAM_URL);
+    console.log('[OIDC-FLOW-DEBUG] Redirect URI:', environment.redirectUri);
+    console.log('[OIDC-FLOW-DEBUG] Current window URL:', window.location.href);
+    console.log('[OIDC-FLOW-DEBUG] ================================================');
+    
     let isReloading = false; // Flag to prevent duplicate reloads
     this.androidKeycloak.onAuthSuccess = () => {
+      console.log('[OIDC-FLOW-DEBUG] ========== onAuthSuccess Triggered ==========');
+      console.log('[OIDC-FLOW-DEBUG] This means token exchange was SUCCESSFUL');
+      console.log('[OIDC-FLOW-DEBUG] Current URL:', window.location.href);
       console.log('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called', {
         isReloading: isReloading,
         hasToken: !!this.androidKeycloak.token,
@@ -587,6 +620,9 @@ export class AndroidKeycloakService {
     
     // Handle authentication errors to prevent infinite loops
     this.androidKeycloak.onAuthError = (errorData: any) => {
+      console.error('[OIDC-FLOW-DEBUG] ========== onAuthError Triggered ==========');
+      console.error('[OIDC-FLOW-DEBUG] This means authentication or token exchange FAILED');
+      console.error('[OIDC-FLOW-DEBUG] Current URL:', window.location.href);
       console.error('[ANDROID-KEYCLOAK DEBUG] onAuthError called', {
         error: errorData,
         errorType: errorData?.error || 'unknown',
@@ -648,6 +684,7 @@ export class AndroidKeycloakService {
       // But don't prevent the normal flow
     };
     
+    console.log('[OIDC-FLOW-DEBUG] ========== About to call keycloak.init ==========');
     console.log('[ANDROID-KEYCLOAK DEBUG] Calling keycloak.init', {
       adapter: 'capacitor-native',
       responseMode: 'query',
@@ -719,6 +756,12 @@ export class AndroidKeycloakService {
       onLoad: onLoad as any, // Type assertion needed for Keycloak compatibility
       checkLoginIframe: false // Disable iframe check for mobile
     }).then((authenticated) => {
+      console.log('[OIDC-FLOW-DEBUG] ========== keycloak.init COMPLETED ==========');
+      console.log('[OIDC-FLOW-DEBUG] Authenticated:', authenticated);
+      console.log('[OIDC-FLOW-DEBUG] Has Token:', !!this.androidKeycloak.token);
+      console.log('[OIDC-FLOW-DEBUG] Token (first 50 chars):', this.androidKeycloak.token ? this.androidKeycloak.token.substring(0, 50) + '...' : 'NONE');
+      console.log('[OIDC-FLOW-DEBUG] Current URL after init:', window.location.href);
+      console.log('[OIDC-FLOW-DEBUG] ================================================');
       console.log('[ANDROID-KEYCLOAK DEBUG] keycloak.init completed successfully', {
         authenticated: authenticated,
         hasToken: !!this.androidKeycloak.token,
@@ -747,10 +790,15 @@ export class AndroidKeycloakService {
       // 5. Login is not already in progress
       // 6. Auth didn't just succeed
       if (!authenticated && !hasCodeInUrl && !this.androidKeycloak.token && !recentlyFailed && !existingToken && !loginInProgress && !authSuccess) {
+        console.log('[OIDC-FLOW-DEBUG] ========== Triggering Login Flow ==========');
+        console.log('[OIDC-FLOW-DEBUG] This will open browser for authentication');
         console.log('[ANDROID-KEYCLOAK DEBUG] Not authenticated and conditions met, triggering login');
         this.isLoginInProgress = true;
         this.lastLoginAttemptTime = Date.now();
-        this.androidKeycloak.login().catch((error) => {
+        this.androidKeycloak.login().then(() => {
+          console.log('[OIDC-FLOW-DEBUG] ========== Login Promise Resolved ==========');
+          console.log('[OIDC-FLOW-DEBUG] Browser should have opened for login');
+        }).catch((error) => {
           console.error('[ANDROID-KEYCLOAK DEBUG] Login error:', error);
           this.isLoginInProgress = false;
           // Mark auth as failed to prevent immediate retry

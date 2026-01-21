@@ -27,6 +27,11 @@ export class AuthInterceptor implements HttpInterceptor {
   decoded: any;
 
   showHomePage = async (isAndroidAppMode: boolean) => {
+    console.log('[OIDC-FLOW-DEBUG] ========== showHomePage() CALLED ==========');
+    console.log('[OIDC-FLOW-DEBUG] This will clear storage and trigger RE-LOGIN');
+    console.log('[OIDC-FLOW-DEBUG] isAndroidAppMode:', isAndroidAppMode);
+    console.log('[OIDC-FLOW-DEBUG] Call Stack:', new Error().stack);
+    
     sessionStorage.clear();
     localStorage.clear();
     this.cookieService.deleteAll();
