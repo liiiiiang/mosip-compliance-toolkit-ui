@@ -11,6 +11,12 @@ export class AndroidKeycloakService {
   private androidKeycloak: Keycloak.KeycloakInstance;
 
   private urlListener: any = null;
+  
+  // Track processed deep links to prevent duplicate processing
+  private processedDeepLinks: Set<string> = new Set();
+  
+  // Flag to prevent concurrent deep link processing
+  private isProcessingDeepLink: boolean = false;
 
   constructor(
   ) {
@@ -40,15 +46,49 @@ export class AndroidKeycloakService {
       this.urlListener = (window as any).Capacitor.Plugins.App.addListener('appUrlOpen', (data: any) => {
         console.log('[ANDROID-KEYCLOAK] Deep link received:', {
           url: data.url,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          isProcessing: this.isProcessingDeepLink,
+          alreadyProcessed: this.processedDeepLinks.has(data.url)
         });
         
         // Check if this is a Keycloak callback (contains code parameter or our redirect URI)
         if (data.url && (data.url.includes('code=') || data.url.includes('android://mosip-compliance-toolkit-ui'))) {
+          // Prevent duplicate processing
+          if (this.processedDeepLinks.has(data.url)) {
+            console.log('[ANDROID-KEYCLOAK] Deep link already processed, ignoring duplicate', {
+              url: data.url
+            });
+            return;
+          }
+          
+          // Prevent concurrent processing
+          if (this.isProcessingDeepLink) {
+            console.log('[ANDROID-KEYCLOAK] Already processing a deep link, ignoring concurrent request', {
+              url: data.url
+            });
+            return;
+          }
+          
+          // Check if URL already has code parameter (prevent unnecessary navigation)
+          const currentUrl = new URL(window.location.href);
+          if (currentUrl.searchParams.has('code')) {
+            console.log('[ANDROID-KEYCLOAK] URL already has code parameter, ignoring deep link', {
+              deepLink: data.url,
+              currentUrl: window.location.href
+            });
+            // Mark as processed to prevent future processing
+            this.processedDeepLinks.add(data.url);
+            return;
+          }
+          
           console.log('[ANDROID-KEYCLOAK] Keycloak callback detected, processing...', {
             url: data.url,
             hasKeycloakInstance: !!this.androidKeycloak
           });
+          
+          // Mark as processing to prevent concurrent handling
+          this.isProcessingDeepLink = true;
+          this.processedDeepLinks.add(data.url);
           
           // Prevent browser from handling the deep link by ensuring we process it
           // If Keycloak is already initialized, update window location to trigger its callback handler
@@ -72,20 +112,25 @@ export class AndroidKeycloakService {
               });
               
               // Only update if URL is different
-              if (window.location.href !== newUrl) {
+              if (window.location.href !== newUrl && !currentUrl.searchParams.has('code')) {
+                // Reset processing flag after navigation (will be set again on new page load)
+                setTimeout(() => {
+                  this.isProcessingDeepLink = false;
+                }, 1000);
                 window.location.href = newUrl;
               } else {
-                console.log('[ANDROID-KEYCLOAK] URL already matches, triggering Keycloak processing');
-                // Force Keycloak to re-process by dispatching a popstate event
-                window.dispatchEvent(new PopStateEvent('popstate'));
+                console.log('[ANDROID-KEYCLOAK] URL already has code parameter or matches, skipping navigation');
+                this.isProcessingDeepLink = false;
               }
             } else {
               console.warn('[ANDROID-KEYCLOAK] Deep link URL has no query parameters');
+              this.isProcessingDeepLink = false;
             }
           } else {
             console.warn('[ANDROID-KEYCLOAK] Keycloak not initialized yet, storing URL for later processing');
             // Store the URL to process after Keycloak is initialized
             sessionStorage.setItem('pending_keycloak_callback', data.url);
+            this.isProcessingDeepLink = false;
           }
         } else {
           console.log('[ANDROID-KEYCLOAK] Deep link is not a Keycloak callback, ignoring');
@@ -110,6 +155,16 @@ export class AndroidKeycloakService {
     if (this.androidKeycloak) {
       console.log('[ANDROID-KEYCLOAK DEBUG] Instance already exists, skipping setup');
       return;
+    }
+    
+    // Clear processed deep links on page reload (but keep them during the same session)
+    // This allows retry after a failed attempt, but prevents infinite loops
+    // Only clear if we have a token or if we're not in the middle of processing
+    const hasToken = !!localStorage.getItem(appConstants.ACCESS_TOKEN);
+    const isProcessingFlag = sessionStorage.getItem('keycloak_auth_processing');
+    if (hasToken && !isProcessingFlag) {
+      console.log('[ANDROID-KEYCLOAK DEBUG] Clearing processed deep links after successful auth');
+      this.processedDeepLinks.clear();
     }
     
     // Check for pending callback from deep link listener (before Keycloak init)
@@ -139,10 +194,12 @@ export class AndroidKeycloakService {
     // This happens when onAuthSuccess triggered reload but URL still has code params
     // Clean URL immediately before keycloak init parses it
     const isProcessing = sessionStorage.getItem('keycloak_auth_processing');
+    const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
     console.log('[ANDROID-KEYCLOAK DEBUG] Processing flag check', {
       isProcessing: isProcessing,
       hasSearch: !!window.location.search,
-      hasHash: !!window.location.hash
+      hasHash: !!window.location.hash,
+      hasToken: !!existingToken
     });
     
     if (isProcessing) {
@@ -155,12 +212,27 @@ export class AndroidKeycloakService {
       }
       // Clear the flag after cleaning URL
       sessionStorage.removeItem('keycloak_auth_processing');
+      // Reset processing flag
+      this.isProcessingDeepLink = false;
       // If we already have a token, we don't need to process the callback again
-      const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
       if (existingToken) {
         console.log('[ANDROID-KEYCLOAK DEBUG] Token already exists, skipping callback processing', {
           tokenLength: existingToken.length
         });
+        return; // Early return if we have a token
+      }
+    }
+    
+    // Check if URL has code parameter but no token - this might indicate a failed exchange
+    const currentUrl = new URL(window.location.href);
+    if (currentUrl.searchParams.has('code') && !existingToken) {
+      console.log('[ANDROID-KEYCLOAK DEBUG] URL has code parameter but no token, might be from failed exchange');
+      // Extract and mark the code as processed to prevent infinite loop
+      const code = currentUrl.searchParams.get('code');
+      if (code) {
+        const codeProcessedKey = `keycloak_code_processed_${code.substring(0, 20)}`;
+        sessionStorage.setItem(codeProcessedKey, 'true');
+        console.log('[ANDROID-KEYCLOAK DEBUG] Marked code as processed to prevent duplicate exchange');
       }
     }
     
@@ -199,11 +271,25 @@ export class AndroidKeycloakService {
           tokenLength: accessToken.length,
           currentUrl: window.location.href
         });
+        
+        // Save token first
         localStorage.setItem(appConstants.ACCESS_TOKEN, accessToken);
+        
+        // Verify token was saved
+        const savedToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+        if (!savedToken || savedToken !== accessToken) {
+          console.error('[ANDROID-KEYCLOAK DEBUG] Failed to save token, aborting reload');
+          return;
+        }
+        
+        console.log('[ANDROID-KEYCLOAK DEBUG] Token saved successfully');
         
         // Mark that we're processing to prevent duplicate calls
         sessionStorage.setItem('keycloak_auth_processing', 'true');
         isReloading = true;
+        
+        // Clear processing flag
+        this.isProcessingDeepLink = false;
         
         // Clear ALL URL parameters and fragments before reloading
         // This prevents the second CODE_TO_TOKEN attempt with an already-used authorization code
@@ -231,6 +317,8 @@ export class AndroidKeycloakService {
         }, 200);
       } else {
         console.warn('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called but no access token');
+        // Reset processing flag if no token
+        this.isProcessingDeepLink = false;
       }
     };
     
