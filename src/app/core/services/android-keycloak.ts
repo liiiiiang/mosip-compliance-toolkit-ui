@@ -19,8 +19,16 @@ export class AndroidKeycloakService {
   }
 
   public setUp() {
+    console.log('[ANDROID-KEYCLOAK DEBUG] setUp called', {
+      hasInstance: !!this.androidKeycloak,
+      url: window.location.href,
+      hasSearch: !!window.location.search,
+      hasHash: !!window.location.hash
+    });
+    
     // Prevent duplicate setup
     if (this.androidKeycloak) {
+      console.log('[ANDROID-KEYCLOAK DEBUG] Instance already exists, skipping setup');
       return;
     }
     
@@ -28,11 +36,18 @@ export class AndroidKeycloakService {
     // This happens when onAuthSuccess triggered reload but URL still has code params
     // Clean URL immediately before keycloak init parses it
     const isProcessing = sessionStorage.getItem('keycloak_auth_processing');
+    console.log('[ANDROID-KEYCLOAK DEBUG] Processing flag check', {
+      isProcessing: isProcessing,
+      hasSearch: !!window.location.search,
+      hasHash: !!window.location.hash
+    });
+    
     if (isProcessing) {
-      console.log('Keycloak setUp: Detected post-auth reload, cleaning URL to prevent duplicate code exchange');
+      console.log('[ANDROID-KEYCLOAK DEBUG] Detected post-auth reload, cleaning URL to prevent duplicate code exchange');
       const cleanUrl = window.location.origin + window.location.pathname;
       // Force clear ALL URL parameters and fragments immediately
       if (window.location.search || window.location.hash) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Cleaning URL from', window.location.href, 'to', cleanUrl);
         window.history.replaceState({}, document.title, cleanUrl);
       }
       // Clear the flag after cleaning URL
@@ -40,7 +55,9 @@ export class AndroidKeycloakService {
       // If we already have a token, we don't need to process the callback again
       const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
       if (existingToken) {
-        console.log('Keycloak setUp: Token already exists, skipping callback processing');
+        console.log('[ANDROID-KEYCLOAK DEBUG] Token already exists, skipping callback processing', {
+          tokenLength: existingToken.length
+        });
       }
     }
     
@@ -52,23 +69,33 @@ export class AndroidKeycloakService {
     
     let isReloading = false; // Flag to prevent duplicate reloads
     this.androidKeycloak.onAuthSuccess = () => {
+      console.log('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called', {
+        isReloading: isReloading,
+        hasToken: !!this.androidKeycloak.token,
+        tokenLength: this.androidKeycloak.token ? this.androidKeycloak.token.length : 0,
+        url: window.location.href
+      });
+      
       // Prevent duplicate processing
       if (isReloading) {
-        console.log('onAuthSuccess: Already processing, skipping');
+        console.log('[ANDROID-KEYCLOAK DEBUG] Already processing, skipping');
         return;
       }
       
       // Check if we already have a token (prevent duplicate processing after reload)
       const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
       if (existingToken && this.androidKeycloak.token === existingToken) {
-        console.log('onAuthSuccess: Token already exists and matches, skipping reload');
+        console.log('[ANDROID-KEYCLOAK DEBUG] Token already exists and matches, skipping reload');
         return;
       }
       
       // save tokens to device storage
       const accessToken = this.androidKeycloak.token;
       if (accessToken) {
-        console.log('onAuthSuccess: Saving token and preparing reload');
+        console.log('[ANDROID-KEYCLOAK DEBUG] Saving token and preparing reload', {
+          tokenLength: accessToken.length,
+          currentUrl: window.location.href
+        });
         localStorage.setItem(appConstants.ACCESS_TOKEN, accessToken);
         
         // Mark that we're processing to prevent duplicate calls
@@ -78,6 +105,10 @@ export class AndroidKeycloakService {
         // Clear ALL URL parameters and fragments before reloading
         // This prevents the second CODE_TO_TOKEN attempt with an already-used authorization code
         const cleanUrl = window.location.origin + window.location.pathname;
+        console.log('[ANDROID-KEYCLOAK DEBUG] Clearing URL before reload', {
+          from: window.location.href,
+          to: cleanUrl
+        });
         window.history.replaceState({}, document.title, cleanUrl);
         
         // Force clear any remaining query params by navigating to clean URL
@@ -85,13 +116,27 @@ export class AndroidKeycloakService {
         setTimeout(() => {
           // Double-check URL is clean
           if (window.location.search || window.location.hash) {
+            console.log('[ANDROID-KEYCLOAK DEBUG] URL still has params, cleaning again', {
+              search: window.location.search,
+              hash: window.location.hash
+            });
             window.history.replaceState({}, document.title, cleanUrl);
           }
+          console.log('[ANDROID-KEYCLOAK DEBUG] Reloading page');
           // Keep the flag during reload - it will be cleared after init checks
           window.location.reload();
         }, 200);
+      } else {
+        console.warn('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called but no access token');
       }
     };
+    
+    console.log('[ANDROID-KEYCLOAK DEBUG] Calling keycloak.init', {
+      adapter: 'capacitor-native',
+      responseMode: 'query',
+      redirectUri: environment.redirectUri,
+      currentUrl: window.location.href
+    });
     
     this.androidKeycloak.init({
       adapter: 'capacitor-native',
@@ -99,8 +144,10 @@ export class AndroidKeycloakService {
       enableLogging: true,
       useNonce: false,
       redirectUri: environment.redirectUri
+    }).then(() => {
+      console.log('[ANDROID-KEYCLOAK DEBUG] keycloak.init completed successfully');
     }).catch((error) => {
-      console.log('Keycloak init error:', error);
+      console.error('[ANDROID-KEYCLOAK DEBUG] Keycloak init error:', error);
     });
   }
   getInstance() {

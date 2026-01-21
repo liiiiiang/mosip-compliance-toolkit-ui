@@ -283,16 +283,58 @@
             }
 
             function processInit() {
+                // DEBUG: Log processInit invocation
+                console.log('[KEYCLOAK DEBUG] processInit called', {
+                    url: window.location.href,
+                    hasSearch: !!window.location.search,
+                    hasHash: !!window.location.hash,
+                    search: window.location.search,
+                    hash: window.location.hash,
+                    processingFlag: sessionStorage.getItem('keycloak_auth_processing'),
+                    timestamp: new Date().toISOString(),
+                    stackTrace: new Error().stack
+                });
+                
+                // Clean URL if we're processing (before parsing callback)
+                var isProcessing = sessionStorage.getItem('keycloak_auth_processing');
+                if (isProcessing && (window.location.search || window.location.hash)) {
+                    console.log('[KEYCLOAK DEBUG] Cleaning URL in processInit before parsing', {
+                        before: window.location.href
+                    });
+                    var cleanUrl = window.location.origin + window.location.pathname;
+                    window.history.replaceState({}, document.title, cleanUrl);
+                    console.log('[KEYCLOAK DEBUG] URL cleaned', {
+                        after: window.location.href
+                    });
+                }
+                
                 var callback = parseCallback(window.location.href);
+                
+                console.log('[KEYCLOAK DEBUG] parseCallback result', {
+                    hasCallback: !!callback,
+                    hasCode: callback && !!callback.code,
+                    isValid: callback && callback.valid,
+                    code: callback && callback.code ? callback.code.substring(0, 20) + '...' : null,
+                    willProcessCallback: callback && callback.valid
+                });
 
                 if (callback) {
+                    console.log('[KEYCLOAK DEBUG] Replacing URL with callback.newUrl', {
+                        oldUrl: window.location.href,
+                        newUrl: callback.newUrl
+                    });
                     window.history.replaceState(window.history.state, null, callback.newUrl);
                 }
 
                 if (callback && callback.valid) {
+                    console.log('[KEYCLOAK DEBUG] Valid callback found, will call processCallback', {
+                        code: callback.code ? callback.code.substring(0, 20) + '...' : null
+                    });
                     return setupCheckLoginIframe().then(function() {
+                        console.log('[KEYCLOAK DEBUG] setupCheckLoginIframe completed, calling processCallback');
                         processCallback(callback, initPromise);
                     }).catch(function (e) {
+                        console.error('[KEYCLOAK DEBUG] setupCheckLoginIframe failed', e);
                         initPromise.setError();
                     });
                 } else if (initOptions) {
@@ -742,6 +784,61 @@
             var error = oauth.error;
             var prompt = oauth.prompt;
 
+            // DEBUG: Log processCallback invocation
+            console.log('[KEYCLOAK DEBUG] processCallback called', {
+                hasCode: !!code,
+                code: code ? code.substring(0, 20) + '...' : null,
+                hasError: !!error,
+                error: error,
+                url: window.location.href,
+                processingFlag: sessionStorage.getItem('keycloak_auth_processing'),
+                existingToken: localStorage.getItem('accessToken') ? 'exists' : 'none',
+                timestamp: new Date().toISOString(),
+                stackTrace: new Error().stack
+            });
+
+            // Prevent duplicate code exchange - check if we already have a token and this code was already processed
+            if (code) {
+                var existingToken = localStorage.getItem('accessToken');
+                var codeProcessedKey = 'keycloak_code_processed_' + code.substring(0, 50);
+                var codeAlreadyProcessed = sessionStorage.getItem(codeProcessedKey);
+                var processingFlag = sessionStorage.getItem('keycloak_auth_processing');
+                
+                console.log('[KEYCLOAK DEBUG] Code processing check', {
+                    code: code.substring(0, 20) + '...',
+                    codeAlreadyProcessed: codeAlreadyProcessed,
+                    hasExistingToken: !!existingToken,
+                    processingFlag: processingFlag
+                });
+                
+                // STRONGER CHECK: If we're processing or code was already processed, skip
+                if (codeAlreadyProcessed === 'true' || processingFlag === 'true') {
+                    console.warn('[KEYCLOAK DEBUG] DUPLICATE DETECTED - Code already processed or processing flag set, skipping duplicate exchange', {
+                        code: code.substring(0, 20) + '...',
+                        codeAlreadyProcessed: codeAlreadyProcessed,
+                        processingFlag: processingFlag
+                    });
+                    // If we already have a token, just succeed without exchanging again
+                    if (existingToken) {
+                        console.log('[KEYCLOAK DEBUG] Existing token found, resolving promise without exchange');
+                        promise && promise.setSuccess();
+                        return;
+                    }
+                    // Even without token, don't exchange again
+                    console.warn('[KEYCLOAK DEBUG] No existing token but duplicate detected, still skipping');
+                    promise && promise.setError({ error: 'duplicate_code_exchange' });
+                    return;
+                }
+                
+                // Mark this code as being processed IMMEDIATELY
+                sessionStorage.setItem(codeProcessedKey, 'true');
+                sessionStorage.setItem('keycloak_auth_processing', 'true');
+                console.log('[KEYCLOAK DEBUG] Marking code as processed', {
+                    code: code.substring(0, 20) + '...',
+                    codeProcessedKey: codeProcessedKey
+                });
+            }
+
             var timeLocal = new Date().getTime();
 
             if (oauth['kc_action_status']) {
@@ -762,6 +859,11 @@
             }
 
             if ((kc.flow != 'implicit') && code) {
+                console.log('[KEYCLOAK DEBUG] Starting token exchange request', {
+                    code: code.substring(0, 20) + '...',
+                    tokenUrl: kc.endpoints.token()
+                });
+                
                 var params = 'code=' + code + '&grant_type=authorization_code';
                 var url = kc.endpoints.token();
                 var req = new XMLHttpRequest();
@@ -779,17 +881,61 @@
                 req.withCredentials = true;
 
                 req.onreadystatechange = function() {
+                    if (req.readyState == 1) {
+                        console.log('[KEYCLOAK DEBUG] Token exchange request opened', {
+                            code: code.substring(0, 20) + '...',
+                            url: url
+                        });
+                    }
+                    if (req.readyState == 2) {
+                        console.log('[KEYCLOAK DEBUG] Token exchange request headers received', {
+                            status: req.status,
+                            code: code.substring(0, 20) + '...'
+                        });
+                    }
+                    if (req.readyState == 3) {
+                        console.log('[KEYCLOAK DEBUG] Token exchange request loading', {
+                            code: code.substring(0, 20) + '...'
+                        });
+                    }
                     if (req.readyState == 4) {
+                        console.log('[KEYCLOAK DEBUG] Token exchange response complete', {
+                            status: req.status,
+                            statusText: req.statusText,
+                            code: code.substring(0, 20) + '...',
+                            responseLength: req.responseText ? req.responseText.length : 0,
+                            timestamp: new Date().toISOString()
+                        });
+                        
                         if (req.status == 200) {
                             var tokenResponse = JSON.parse(req.responseText);
+                            console.log('[KEYCLOAK DEBUG] Token exchange successful', {
+                                hasAccessToken: !!tokenResponse['access_token'],
+                                hasRefreshToken: !!tokenResponse['refresh_token'],
+                                hasIdToken: !!tokenResponse['id_token'],
+                                code: code.substring(0, 20) + '...'
+                            });
                             authSuccess(tokenResponse['access_token'], tokenResponse['refresh_token'], tokenResponse['id_token'], kc.flow === 'standard');
                             scheduleCheckIframe();
                         } else {
+                            console.error('[KEYCLOAK DEBUG] Token exchange failed', {
+                                status: req.status,
+                                statusText: req.statusText,
+                                response: req.responseText ? req.responseText.substring(0, 200) : 'no response',
+                                code: code.substring(0, 20) + '...',
+                                timestamp: new Date().toISOString()
+                            });
                             kc.onAuthError && kc.onAuthError();
                             promise && promise.setError();
                         }
                     }
                 };
+                console.log('[KEYCLOAK DEBUG] Sending token exchange request', {
+                    code: code.substring(0, 20) + '...',
+                    url: url,
+                    timestamp: new Date().toISOString(),
+                    stackTrace: new Error().stack
+                });
                 req.send(params);
             }
 
@@ -1072,12 +1218,31 @@
         }
 
         function parseCallback(url) {
+            console.log('[KEYCLOAK DEBUG] parseCallback called', {
+                url: url,
+                urlLength: url.length,
+                hasCode: url.indexOf('code=') !== -1,
+                hasState: url.indexOf('state=') !== -1
+            });
+            
             var oauth = parseCallbackUrl(url);
             if (!oauth) {
+                console.log('[KEYCLOAK DEBUG] parseCallbackUrl returned null/undefined');
                 return;
             }
 
+            console.log('[KEYCLOAK DEBUG] parseCallbackUrl result', {
+                hasCode: !!oauth.code,
+                hasState: !!oauth.state,
+                code: oauth.code ? oauth.code.substring(0, 20) + '...' : null,
+                state: oauth.state ? oauth.state.substring(0, 20) + '...' : null
+            });
+
             var oauthState = callbackStorage.get(oauth.state);
+            console.log('[KEYCLOAK DEBUG] callbackStorage.get result', {
+                hasState: !!oauthState,
+                state: oauth.state ? oauth.state.substring(0, 20) + '...' : null
+            });
 
             if (oauthState) {
                 oauth.valid = true;
@@ -1085,6 +1250,9 @@
                 oauth.storedNonce = oauthState.nonce;
                 oauth.prompt = oauthState.prompt;
                 oauth.pkceCodeVerifier = oauthState.pkceCodeVerifier;
+                console.log('[KEYCLOAK DEBUG] OAuth state found, callback is valid');
+            } else {
+                console.log('[KEYCLOAK DEBUG] No OAuth state found, callback may be invalid');
             }
 
             return oauth;
