@@ -190,49 +190,73 @@ export class AndroidKeycloakService {
   /**
    * Patch document.cookie to backup Keycloak callback cookies to sessionStorage
    * This ensures cookies survive the Chrome -> WebView transition
+   * Only intercepts Keycloak callback cookies, all other cookies pass through normally
    */
   private setupCookieBackup() {
-    if (typeof document === 'undefined') return;
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      console.warn('[ANDROID-KEYCLOAK] Document/window not available, skipping cookie backup setup');
+      return;
+    }
     
-    const cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
-    if (!cookieDescriptor || !cookieDescriptor.set) return;
-    
-    const originalCookieSetter = cookieDescriptor.set;
-    const originalCookieGetter = cookieDescriptor.get;
-    
-    Object.defineProperty(document, 'cookie', {
-      set: function(value: string) {
+    try {
+      const cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+      if (!cookieDescriptor || !cookieDescriptor.set) {
+        console.warn('[ANDROID-KEYCLOAK] Cannot access cookie descriptor, skipping backup setup');
+        return;
+      }
+      
+      const originalCookieSetter = cookieDescriptor.set;
+      const originalCookieGetter = cookieDescriptor.get;
+      
+      // Check if already patched
+      if ((originalCookieSetter as any).__isPatched) {
+        console.log('[ANDROID-KEYCLOAK] Cookie backup already enabled');
+        return;
+      }
+      
+      const patchedSetter = function(value: string) {
         // Check if this is a Keycloak callback cookie
-        if (value.startsWith('kc-callback-')) {
+        if (value && value.startsWith('kc-callback-')) {
           try {
             const match = value.match(/^kc-callback-([^=]+)=([^;]+)/);
-            if (match) {
-              const key = `kc-callback-${match[1]}`;
+            if (match && match[1] && match[2]) {
+              const state = match[1];
               const cookieValue = match[2];
               console.log('[ANDROID-KEYCLOAK] Backing up Keycloak callback cookie to sessionStorage', {
-                key: key.substring(0, 30) + '...',
+                state: state.substring(0, 20) + '...',
                 valueLength: cookieValue.length
               });
               // Backup to sessionStorage
-              sessionStorage.setItem(`kc-state-backup-${match[1]}`, cookieValue);
+              sessionStorage.setItem(`kc-state-backup-${state}`, cookieValue);
             }
           } catch (e) {
-            console.warn('[ANDROID-KEYCLOAK] Failed to backup cookie:', e);
+            console.warn('[ANDROID-KEYCLOAK] Failed to backup cookie (non-critical):', e);
           }
         }
-        // Call original setter
+        // Always call original setter to ensure Keycloak works normally
         originalCookieSetter.call(document, value);
-      },
-      get: function() {
-        if (originalCookieGetter) {
-          return originalCookieGetter.call(document);
-        }
-        return '';
-      },
-      configurable: true
-    });
-    
-    console.log('[ANDROID-KEYCLOAK] Cookie backup mechanism enabled');
+      };
+      
+      // Mark as patched to prevent duplicate patches
+      (patchedSetter as any).__isPatched = true;
+      
+      Object.defineProperty(document, 'cookie', {
+        set: patchedSetter,
+        get: function() {
+          if (originalCookieGetter) {
+            return originalCookieGetter.call(document);
+          }
+          return '';
+        },
+        configurable: true,
+        enumerable: true
+      });
+      
+      console.log('[ANDROID-KEYCLOAK] Cookie backup mechanism enabled');
+    } catch (e) {
+      console.error('[ANDROID-KEYCLOAK] Failed to setup cookie backup (non-critical):', e);
+      // Don't throw - allow Keycloak to work without backup
+    }
   }
 
   public setUp() {
