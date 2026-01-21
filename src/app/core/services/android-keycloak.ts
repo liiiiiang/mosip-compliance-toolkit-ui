@@ -629,16 +629,23 @@ export class AndroidKeycloakService {
         });
         window.history.replaceState({}, document.title, cleanUrl);
         
-        // DO NOT RELOAD! Just clear the URL and let the app continue
-        // Reloading causes a new Keycloak instance to be created
         console.log('[OIDC-FLOW-DEBUG] ========== Token saved, URL cleaned, auth complete ==========');
-        console.log('[OIDC-FLOW-DEBUG] NOT reloading page to prevent creating new Keycloak instance');
+        console.log('[OIDC-FLOW-DEBUG] Reloading page to refresh app state');
         
-        // Clear processing flags after a delay
+        // REVERT: We need to reload to ensure app state is fresh
+        // But we've marked the authentication as complete, so no new login will be triggered
         setTimeout(() => {
-          sessionStorage.removeItem('keycloak_auth_processing');
-          console.log('[OIDC-FLOW-DEBUG] Auth processing complete, app should now work normally');
-        }, 1000);
+          // Double-check URL is clean before reload
+          if (window.location.search || window.location.hash) {
+            console.log('[ANDROID-KEYCLOAK DEBUG] URL still has params, cleaning again before reload', {
+              search: window.location.search,
+              hash: window.location.hash
+            });
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+          console.log('[OIDC-FLOW-DEBUG] Reloading page now...');
+          window.location.reload();
+        }, 200);
       } else {
         console.warn('[ANDROID-KEYCLOAK DEBUG] onAuthSuccess called but no access token');
         // Reset processing flag if no token
