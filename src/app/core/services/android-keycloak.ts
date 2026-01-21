@@ -188,9 +188,8 @@ export class AndroidKeycloakService {
   }
 
   /**
-   * Patch document.cookie to backup Keycloak callback cookies to sessionStorage
-   * This ensures cookies survive the Chrome -> WebView transition
-   * Only intercepts Keycloak callback cookies, all other cookies pass through normally
+   * Monitor document.cookie changes to backup Keycloak callback cookies to sessionStorage
+   * Uses MutationObserver as a fallback when direct property redefinition fails
    */
   private setupCookieBackup() {
     if (typeof document === 'undefined' || typeof window === 'undefined') {
@@ -198,65 +197,48 @@ export class AndroidKeycloakService {
       return;
     }
     
-    try {
-      const cookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
-      if (!cookieDescriptor || !cookieDescriptor.set) {
-        console.warn('[ANDROID-KEYCLOAK] Cannot access cookie descriptor, skipping backup setup');
-        return;
-      }
-      
-      const originalCookieSetter = cookieDescriptor.set;
-      const originalCookieGetter = cookieDescriptor.get;
-      
-      // Check if already patched
-      if ((originalCookieSetter as any).__isPatched) {
-        console.log('[ANDROID-KEYCLOAK] Cookie backup already enabled');
-        return;
-      }
-      
-      const patchedSetter = function(value: string) {
-        // Check if this is a Keycloak callback cookie
-        if (value && value.startsWith('kc-callback-')) {
-          try {
-            const match = value.match(/^kc-callback-([^=]+)=([^;]+)/);
-            if (match && match[1] && match[2]) {
-              const state = match[1];
-              const cookieValue = match[2];
-              console.log('[ANDROID-KEYCLOAK] Backing up Keycloak callback cookie to sessionStorage', {
-                state: state.substring(0, 20) + '...',
-                valueLength: cookieValue.length
-              });
-              // Backup to sessionStorage
-              sessionStorage.setItem(`kc-state-backup-${state}`, cookieValue);
+    // Try to intercept cookie setting using a wrapper around document.cookie
+    // Since direct redefinition may fail, we'll use a polling approach instead
+    let lastCookieValue = document.cookie;
+    
+    // Poll for cookie changes (less intrusive than property redefinition)
+    const cookieCheckInterval = setInterval(() => {
+      const currentCookies = document.cookie;
+      if (currentCookies !== lastCookieValue) {
+        // Check for new Keycloak callback cookies
+        const cookies = currentCookies.split(';');
+        cookies.forEach(cookie => {
+          const trimmed = cookie.trim();
+          if (trimmed.startsWith('kc-callback-')) {
+            try {
+              const match = trimmed.match(/^kc-callback-([^=]+)=(.+)$/);
+              if (match && match[1] && match[2]) {
+                const state = match[1];
+                const cookieValue = match[2];
+                const backupKey = `kc-state-backup-${state}`;
+                
+                // Only backup if not already backed up
+                if (!sessionStorage.getItem(backupKey)) {
+                  console.log('[ANDROID-KEYCLOAK] Backing up Keycloak callback cookie to sessionStorage', {
+                    state: state.substring(0, 20) + '...',
+                    valueLength: cookieValue.length
+                  });
+                  sessionStorage.setItem(backupKey, cookieValue);
+                }
+              }
+            } catch (e) {
+              // Ignore errors
             }
-          } catch (e) {
-            console.warn('[ANDROID-KEYCLOAK] Failed to backup cookie (non-critical):', e);
           }
-        }
-        // Always call original setter to ensure Keycloak works normally
-        originalCookieSetter.call(document, value);
-      };
-      
-      // Mark as patched to prevent duplicate patches
-      (patchedSetter as any).__isPatched = true;
-      
-      Object.defineProperty(document, 'cookie', {
-        set: patchedSetter,
-        get: function() {
-          if (originalCookieGetter) {
-            return originalCookieGetter.call(document);
-          }
-          return '';
-        },
-        configurable: true,
-        enumerable: true
-      });
-      
-      console.log('[ANDROID-KEYCLOAK] Cookie backup mechanism enabled');
-    } catch (e) {
-      console.error('[ANDROID-KEYCLOAK] Failed to setup cookie backup (non-critical):', e);
-      // Don't throw - allow Keycloak to work without backup
-    }
+        });
+        lastCookieValue = currentCookies;
+      }
+    }, 100); // Check every 100ms
+    
+    // Store interval ID so we can clear it if needed
+    (window as any).__keycloakCookieBackupInterval = cookieCheckInterval;
+    
+    console.log('[ANDROID-KEYCLOAK] Cookie backup mechanism enabled (polling mode)');
   }
 
   public setUp() {
@@ -314,12 +296,12 @@ export class AndroidKeycloakService {
     // This happens when onAuthSuccess triggered reload but URL still has code params
     // Clean URL immediately before keycloak init parses it
     const isProcessing = sessionStorage.getItem('keycloak_auth_processing');
-    const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+    const existingTokenCheck = localStorage.getItem(appConstants.ACCESS_TOKEN);
     console.log('[ANDROID-KEYCLOAK DEBUG] Processing flag check', {
       isProcessing: isProcessing,
       hasSearch: !!window.location.search,
       hasHash: !!window.location.hash,
-      hasToken: !!existingToken
+      hasToken: !!existingTokenCheck
     });
     
     if (isProcessing) {
@@ -335,9 +317,9 @@ export class AndroidKeycloakService {
       // Reset processing flag
       this.isProcessingDeepLink = false;
       // If we already have a token, we don't need to process the callback again
-      if (existingToken) {
+      if (existingTokenCheck) {
         console.log('[ANDROID-KEYCLOAK DEBUG] Token already exists, skipping callback processing', {
-          tokenLength: existingToken.length
+          tokenLength: existingTokenCheck.length
         });
         return; // Early return if we have a token
       }
@@ -345,7 +327,7 @@ export class AndroidKeycloakService {
     
     // Check if URL has code parameter but no token - this might indicate a failed exchange
     const currentUrl = new URL(window.location.href);
-    if (currentUrl.searchParams.has('code') && !existingToken) {
+    if (currentUrl.searchParams.has('code') && !existingTokenCheck) {
       console.log('[ANDROID-KEYCLOAK DEBUG] URL has code parameter but no token, might be from failed exchange');
       // Extract and mark the code as processed to prevent infinite loop
       const code = currentUrl.searchParams.get('code');
@@ -406,6 +388,8 @@ export class AndroidKeycloakService {
         
         // Mark that we're processing to prevent duplicate calls
         sessionStorage.setItem('keycloak_auth_processing', 'true');
+        // Mark that we successfully authenticated to prevent re-login after reload
+        sessionStorage.setItem('keycloak_auth_success', 'true');
         isReloading = true;
         
         // Clear processing flag
@@ -442,6 +426,29 @@ export class AndroidKeycloakService {
       }
     };
     
+    // Handle authentication errors to prevent infinite loops
+    this.androidKeycloak.onAuthError = (errorData: any) => {
+      console.error('[ANDROID-KEYCLOAK DEBUG] onAuthError called', {
+        error: errorData,
+        url: window.location.href
+      });
+      
+      // Mark that auth failed to prevent immediate re-login attempts
+      sessionStorage.setItem('keycloak_auth_failed', 'true');
+      sessionStorage.setItem('keycloak_auth_failed_time', Date.now().toString());
+      
+      // Don't automatically retry - let user try again manually
+      // Reset processing flag
+      this.isProcessingDeepLink = false;
+    };
+    
+    // Handle token expiration
+    this.androidKeycloak.onTokenExpired = () => {
+      console.log('[ANDROID-KEYCLOAK DEBUG] onTokenExpired called');
+      // Token expired - will trigger re-authentication
+      // But don't prevent the normal flow
+    };
+    
     console.log('[ANDROID-KEYCLOAK DEBUG] Calling keycloak.init', {
       adapter: 'capacitor-native',
       responseMode: 'query',
@@ -449,16 +456,91 @@ export class AndroidKeycloakService {
       currentUrl: window.location.href
     });
     
+    // Check if user is already authenticated
+    const existingToken = localStorage.getItem(appConstants.ACCESS_TOKEN);
+    const hasCodeInUrl = window.location.search.includes('code=');
+    const authSuccess = sessionStorage.getItem('keycloak_auth_success');
+    const authFailed = sessionStorage.getItem('keycloak_auth_failed');
+    const authFailedTime = authFailed ? parseInt(sessionStorage.getItem('keycloak_auth_failed_time') || '0') : 0;
+    
+    // If auth recently failed (within last 5 seconds), don't immediately retry
+    const recentlyFailed = authFailed && (Date.now() - authFailedTime < 5000);
+    
+    // Determine onLoad behavior:
+    // - If URL has code parameter, we're in callback - don't trigger login (use check-sso)
+    // - If auth just succeeded, use check-sso to verify without triggering login
+    // - If auth recently failed, use check-sso to avoid immediate retry
+    // - If no token and no code and no recent failure, trigger login
+    let onLoad: 'check-sso' | 'login-required' = 'check-sso';
+    if (hasCodeInUrl) {
+      onLoad = 'check-sso'; // Don't trigger login during callback
+    } else if (authSuccess) {
+      onLoad = 'check-sso'; // Don't trigger login if we just succeeded
+    } else if (recentlyFailed) {
+      onLoad = 'check-sso'; // Don't retry immediately after failure
+      console.log('[ANDROID-KEYCLOAK DEBUG] Auth recently failed, using check-sso to avoid immediate retry');
+    } else if (!existingToken) {
+      onLoad = 'login-required'; // Trigger login if no token
+    }
+    
+    console.log('[ANDROID-KEYCLOAK DEBUG] Keycloak init options', {
+      adapter: 'capacitor-native',
+      responseMode: 'query',
+      redirectUri: environment.redirectUri,
+      onLoad: onLoad,
+      hasToken: !!existingToken,
+      hasCode: hasCodeInUrl,
+      authSuccess: !!authSuccess,
+      authFailed: !!authFailed,
+      recentlyFailed: recentlyFailed
+    });
+    
     this.androidKeycloak.init({
       adapter: 'capacitor-native',
       responseMode: 'query',
       enableLogging: true,
       useNonce: false,
-      redirectUri: environment.redirectUri
-    }).then(() => {
-      console.log('[ANDROID-KEYCLOAK DEBUG] keycloak.init completed successfully');
+      redirectUri: environment.redirectUri,
+      onLoad: onLoad as any, // Type assertion needed for Keycloak compatibility
+      checkLoginIframe: false // Disable iframe check for mobile
+    }).then((authenticated) => {
+      console.log('[ANDROID-KEYCLOAK DEBUG] keycloak.init completed successfully', {
+        authenticated: authenticated,
+        hasToken: !!this.androidKeycloak.token,
+        tokenFromInit: !!this.androidKeycloak.token
+      });
+      
+      // Clear auth success flag if we successfully authenticated
+      if (authenticated && this.androidKeycloak.token) {
+        sessionStorage.removeItem('keycloak_auth_failed');
+        sessionStorage.removeItem('keycloak_auth_failed_time');
+      }
+      
+      // Clear auth success flag after checking (it was just used to prevent re-login)
+      if (authSuccess) {
+        sessionStorage.removeItem('keycloak_auth_success');
+      }
+      
+      // Only trigger login if:
+      // 1. Not authenticated
+      // 2. No code in URL (not in callback)
+      // 3. No token
+      // 4. Auth didn't recently fail
+      if (!authenticated && !hasCodeInUrl && !this.androidKeycloak.token && !recentlyFailed && !existingToken) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Not authenticated and conditions met, triggering login');
+        this.androidKeycloak.login();
+      } else if (recentlyFailed) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login due to recent auth failure');
+      } else if (hasCodeInUrl) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - processing callback');
+      } else if (existingToken || this.androidKeycloak.token) {
+        console.log('[ANDROID-KEYCLOAK DEBUG] Skipping login - token exists');
+      }
     }).catch((error) => {
       console.error('[ANDROID-KEYCLOAK DEBUG] Keycloak init error:', error);
+      // Mark auth as failed to prevent immediate retry
+      sessionStorage.setItem('keycloak_auth_failed', 'true');
+      sessionStorage.setItem('keycloak_auth_failed_time', Date.now().toString());
     });
   }
   getInstance() {
