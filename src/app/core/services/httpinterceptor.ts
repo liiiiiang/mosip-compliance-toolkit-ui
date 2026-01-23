@@ -50,7 +50,12 @@ export class AuthInterceptor implements HttpInterceptor {
         url: cookieUrl,
         key: appConstants.AUTHORIZATION
       });
-      await this.androidKeycloakService.getInstance().login();
+      const keycloakInstance = this.androidKeycloakService.getInstance();
+      if (keycloakInstance) {
+        await keycloakInstance.login();
+      } else {
+        console.warn('Keycloak instance is not initialized, cannot trigger login');
+      }
     }
   }
 
